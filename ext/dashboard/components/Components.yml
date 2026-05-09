@@ -1,12 +1,14 @@
 # https://blueprint.zip/docs/configs/componentsyml
 # Route serveur affichée pour chaque egg/sélection où l’admin a activé cette extension (config panel).
+#
+# Important : utiliser le format liste YAML « bloc » ci-dessous. Le style « flow »
+# `- { Name: ..., Type: server, ... }` est mal parsé par Blueprint (parse_yaml) :
+# la clé Type n’est pas reconnue → erreur FATAL sur les types de route.
 
 Navigation:
   Routes:
-    - {
-        Name: 'Mods & plugins',
-        Path: '/mc-plugins',
-        Type: 'server',
-        Component: 'sections/McPluginsDashboard',
-        AdminOnly: 'false',
-      }
+    - Name: 'Mods & plugins'
+      Path: '/mc-plugins'
+      Type: 'server'
+      Component: 'sections/McPluginsDashboard'
+      AdminOnly: 'false'
