@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Route;
+use {appcontext}\CatalogController;
 
 /**
  * Routes étend `/api/client/extensions/{identifier}` (voir blueprint.zip/docs/concepts/routing).
@@ -16,3 +17,5 @@ Route::get('/health', fn () => response()->json([
     'blueprint_matches_target' => '{is_target}',
     'blueprint_engine' => '{engine}',
 ]));
+
+Route::get('/catalog/search', [CatalogController::class, 'search']);

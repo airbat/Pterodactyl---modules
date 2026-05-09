@@ -9,7 +9,7 @@
       "source_file": "ext/routes/client.php",
       "source_location": "L1",
       "id": "routes_client_php",
-      "community": 1,
+      "community": 3,
       "norm_label": "client.php"
     },
     {
@@ -18,7 +18,7 @@
       "source_file": "ext/views/admin/extension.blade.php",
       "source_location": null,
       "id": "views_admin_extension_blade_php",
-      "community": 2,
+      "community": 4,
       "norm_label": "extension.blade.php"
     },
     {
@@ -27,7 +27,7 @@
       "source_file": "ext/database/migrations/2026_05_09_000001_create_pmcp_plugins_table.php",
       "source_location": "L1",
       "id": "database_migrations_2026_05_09_000001_create_pmcp_plugins_table_php",
-      "community": 0,
+      "community": 1,
       "norm_label": "2026_05_09_000001_create_pmcp_plugins_table.php"
     },
     {
@@ -36,7 +36,7 @@
       "source_file": "ext/database/migrations/2026_05_09_000001_create_pmcp_plugins_table.php",
       "source_location": "L10",
       "id": "2026_05_09_000001_create_pmcp_plugins_table_up",
-      "community": 0,
+      "community": 1,
       "norm_label": "up()"
     },
     {
@@ -45,8 +45,35 @@
       "source_file": "ext/database/migrations/2026_05_09_000001_create_pmcp_plugins_table.php",
       "source_location": "L26",
       "id": "2026_05_09_000001_create_pmcp_plugins_table_down",
-      "community": 0,
+      "community": 1,
       "norm_label": "down()"
+    },
+    {
+      "label": "CatalogController.php",
+      "file_type": "code",
+      "source_file": "ext/app/CatalogController.php",
+      "source_location": "L1",
+      "id": "app_catalogcontroller_php",
+      "community": 2,
+      "norm_label": "catalogcontroller.php"
+    },
+    {
+      "label": "CatalogController",
+      "file_type": "code",
+      "source_file": "ext/app/CatalogController.php",
+      "source_location": "L17",
+      "id": "catalogcontroller_catalogcontroller",
+      "community": 2,
+      "norm_label": "catalogcontroller"
+    },
+    {
+      "label": ".search()",
+      "file_type": "code",
+      "source_file": "ext/app/CatalogController.php",
+      "source_location": "L24",
+      "id": "catalogcontroller_catalogcontroller_search",
+      "community": 2,
+      "norm_label": ".search()"
     },
     {
       "label": "McPluginsDashboard.tsx",
@@ -54,8 +81,35 @@
       "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
       "source_location": "L1",
       "id": "dashboard_components_sections_mcpluginsdashboard_tsx",
-      "community": 3,
+      "community": 0,
       "norm_label": "mcpluginsdashboard.tsx"
+    },
+    {
+      "label": "serverFromPath()",
+      "file_type": "code",
+      "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
+      "source_location": "L75",
+      "id": "mcpluginsdashboard_serverfrompath",
+      "community": 0,
+      "norm_label": "serverfrompath()"
+    },
+    {
+      "label": "fetchJson()",
+      "file_type": "code",
+      "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
+      "source_location": "L80",
+      "id": "mcpluginsdashboard_fetchjson",
+      "community": 0,
+      "norm_label": "fetchjson()"
+    },
+    {
+      "label": "onSubmit()",
+      "file_type": "code",
+      "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
+      "source_location": "L151",
+      "id": "mcpluginsdashboard_onsubmit",
+      "community": 0,
+      "norm_label": "onsubmit()"
     }
   ],
   "links": [
@@ -81,6 +135,66 @@
       "_tgt": "2026_05_09_000001_create_pmcp_plugins_table_down",
       "source": "database_migrations_2026_05_09_000001_create_pmcp_plugins_table_php",
       "target": "2026_05_09_000001_create_pmcp_plugins_table_down",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "ext/app/CatalogController.php",
+      "source_location": "L17",
+      "weight": 1.0,
+      "_src": "app_catalogcontroller_php",
+      "_tgt": "catalogcontroller_catalogcontroller",
+      "source": "app_catalogcontroller_php",
+      "target": "catalogcontroller_catalogcontroller",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "ext/app/CatalogController.php",
+      "source_location": "L24",
+      "weight": 1.0,
+      "_src": "catalogcontroller_catalogcontroller",
+      "_tgt": "catalogcontroller_catalogcontroller_search",
+      "source": "catalogcontroller_catalogcontroller",
+      "target": "catalogcontroller_catalogcontroller_search",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
+      "source_location": "L75",
+      "weight": 1.0,
+      "_src": "dashboard_components_sections_mcpluginsdashboard_tsx",
+      "_tgt": "mcpluginsdashboard_serverfrompath",
+      "source": "dashboard_components_sections_mcpluginsdashboard_tsx",
+      "target": "mcpluginsdashboard_serverfrompath",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
+      "source_location": "L80",
+      "weight": 1.0,
+      "_src": "dashboard_components_sections_mcpluginsdashboard_tsx",
+      "_tgt": "mcpluginsdashboard_fetchjson",
+      "source": "dashboard_components_sections_mcpluginsdashboard_tsx",
+      "target": "mcpluginsdashboard_fetchjson",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
+      "source_location": "L151",
+      "weight": 1.0,
+      "_src": "dashboard_components_sections_mcpluginsdashboard_tsx",
+      "_tgt": "mcpluginsdashboard_onsubmit",
+      "source": "dashboard_components_sections_mcpluginsdashboard_tsx",
+      "target": "mcpluginsdashboard_onsubmit",
       "confidence_score": 1.0
     }
   ],
