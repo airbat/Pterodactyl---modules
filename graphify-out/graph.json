@@ -47,6 +47,15 @@
       "id": "2026_05_09_000001_create_pmcp_plugins_table_down",
       "community": 0,
       "norm_label": "down()"
+    },
+    {
+      "label": "McPluginsDashboard.tsx",
+      "file_type": "code",
+      "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
+      "source_location": "L1",
+      "id": "dashboard_components_sections_mcpluginsdashboard_tsx",
+      "community": 3,
+      "norm_label": "mcpluginsdashboard.tsx"
     }
   ],
   "links": [

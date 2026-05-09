@@ -1,0 +1,12 @@
+# https://blueprint.zip/docs/configs/componentsyml
+# Route serveur affichée pour chaque egg/sélection où l’admin a activé cette extension (config panel).
+
+Navigation:
+  Routes:
+    - {
+        Name: 'Mods & plugins',
+        Path: '/mc-plugins',
+        Type: 'server',
+        Component: 'sections/McPluginsDashboard',
+        AdminOnly: 'false',
+      }

@@ -1,11 +1,11 @@
 # Graph Report - Pterodactyl - modules  (2026-05-09)
 
 ## Corpus Check
-- 3 files · ~21,645 words
+- 4 files · ~22,043 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 5 nodes · 2 edges · 0 communities detected
+- 6 nodes · 2 edges · 0 communities detected
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS
 - Token cost: 0 input · 0 output
 

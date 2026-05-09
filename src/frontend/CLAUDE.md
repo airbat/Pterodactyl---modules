@@ -5,8 +5,9 @@
 ## Périmètre
 
 UI du module pour les **deux Panels** :
-- `src/frontend/pterodactyl/` → Vue 2.7 + Vuex (pour Pterodactyl Panel original)
-- `src/frontend/pelican/` → Livewire 3 + Alpine.js (pour Pelican Panel)
+- **`ext/dashboard/components/`** → [**Blueprint `Components.yml`**](https://blueprint.zip/docs/configs/componentsyml) — React dans le même bundle que le panel Pterodactyl client (`conf.yml → dashboard.components`). C’est là que vit la vue **Mods & plugins** (`sections/McPluginsDashboard.tsx`).
+- `src/frontend/pterodactyl/` → doc historique Vue 2 côté core ; pour une extension Blueprint, l’UI client prioritaire reste **`ext/dashboard/components/`**.
+- `src/frontend/pelican/` → Livewire 3 + Alpine.js (Pelican Panel — hors stack Blueprint Components).
 - `src/frontend/shared/` → CSS/SCSS, i18n, assets, **strictement pas de logique JS/PHP**
 
 ## Quand Vue 2 vs Livewire ?

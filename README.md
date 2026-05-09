@@ -4,7 +4,7 @@
 ![Panels](https://img.shields.io/badge/panels-Pterodactyl%20%7C%20Pelican-blue)
 ![Status](https://img.shields.io/badge/status-extension%20bootstrap-yellow)
 
-> **État actuel** : hiérarchie `CLAUDE.md`, documentation, `conf.yml` Blueprint, première route client `/health`, vue admin minimale, migration `pmcp_plugins` de base, script `scripts/package-blueprint.sh`. Les providers Modrinth/CurseForge et l’UI dashboard arrivent ensuite.
+> **État actuel** : hiérarchie `CLAUDE.md`, documentation, `conf.yml` Blueprint, première route client `/health`, **page dashboard React** (« Mods & plugins », chemin **`/mc-plugins`** sur une fiche serveur), vue admin minimale, migration `pmcp_plugins` de base, script `scripts/package-blueprint.sh`. Les providers Modrinth/CurseForge et le catalogue arrivent ensuite.
 
 > **Identifiant Blueprint** : `pteromcplugins` (lettres minuscules uniquement, contrainte Blueprint). Le nom du dépôt Git peut rester `pterodactyl-mc-plugins`.
 
@@ -76,11 +76,11 @@ MODRINTH_PERSONAL_ACCESS_TOKEN=
 
 Ne jamais exposer ces clés côté navigateur ; les appels restent backend.
 
-## Prise en main rapide (futur)
+## Prise en main rapide
 
-1. **Parcourir** le catalogue depuis l’onglet serveur Minecraft.
-2. **Installer** un plugin/mod — le module demandera un redémarrage si nécessaire.
-3. **Mettre à jour** ou **annuler** (rollback) après un backup automatique.
+1. Installer l’extension (voir ci-dessus), ouvrir un **serveur** Minecraft dans le panel : entrée **Mods & plugins** (route `/mc-plugins` relative au serveur, type `server` dans Blueprint).
+2. La page affiche pour l’instant un **health-check JSON** (`/api/client/extensions/pteromcplugins/health`). Le catalogue arrive ensuite.
+3. **Futur** : **Parcourir** le catalogue, **installer**, **mettre à jour**, **rollback** après backup automatique.
 
 ## FAQ
 
