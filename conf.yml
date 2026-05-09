@@ -4,7 +4,7 @@ info:
   identifier: "pteromcplugins"
   description: "Browse, install, update, and manage Minecraft plugins/mods/addons from Modrinth and CurseForge directly inside Pterodactyl Panel and Pelican Panel."
   flags: ""
-  version: "0.2.0-dev"
+  version: "0.2.1-dev"
   # Voir https://blueprint.zip/docs/configs/confyml — aligné sur blueprint.zip actuel (avertissement install si divergence)
   target: "beta-2025-09"
   author: "TBD"
