@@ -1,0 +1,20 @@
+info:
+  name: "Minecraft Plugins/Addons Manager"
+  identifier: "pterodactyl-mc-plugins"
+  description: "Browse, install, update, and manage Minecraft plugins/mods/addons from Modrinth and CurseForge directly inside Pterodactyl Panel and Pelican Panel."
+  flags: ""
+  version: "0.1.0-dev"
+  target: "1.11.5"
+  author: "TBD"
+  icon: ""
+  website: ""
+
+admin:
+  view: ""
+  controller: ""
+  css: ""
+  wrapper: ""
+
+dashboard:
+  components: ""
+  css: ""

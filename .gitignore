@@ -1,0 +1,34 @@
+# PHP / Composer
+/vendor/
+composer.lock
+
+# Node / npm
+/node_modules/
+package-lock.json
+yarn.lock
+
+# Laravel
+.env
+.env.*
+!.env.example
+/storage/*.key
+/storage/logs/*
+
+# Tests
+.phpunit.result.cache
+/coverage/
+.pest/
+
+# Build
+/dist/
+*.blueprint
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Project-specific
+/local-test-panel/
