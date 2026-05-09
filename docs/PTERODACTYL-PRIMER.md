@@ -15,9 +15,9 @@ Points clés :
 Flux typique après installation Panel :
 
 ```
-cp dist/pterodactyl-mc-plugins.blueprint /var/www/pterodactyl/
+cp dist/pteromcplugins.blueprint /var/www/pterodactyl/
 cd /var/www/pterodactyl
-blueprint -i pterodactyl-mc-plugins
+blueprint -i pteromcplugins
 ```
 
 Les chemins exacts peuvent différer (Pelican utilise souvent arborescence analogue). Ajuster SELinux/permissions systemd selon distro.
@@ -125,6 +125,6 @@ Voir table détaillée `docs/MINECRAFT-PRIMER.md`. Règle générale UI :
 | Frontend | Duplication contrôlée (Vue vs Livewire) |
 | Routing names | Préfixes namespaces différents : adapter tests E2E |
 | Auth guards | Harmoniser enums permissions string vs int codes internes |
-| Feature flags blueprint | Tester sur deux panels CI matrix (voir `docs/TESTING.md`) |
+| Admin Blueprint (`admin.view`) | `ext/views/admin/extension.blade.php` utilise `@extends('layouts.admin')` **Pterodactyl-classique** — vérifier / factoriser équivalent sous Pelican lors du port officiel |
 
 Avant merges majeurs blueprint : passer **phpstan niveau projet module** après merge Panel core minor bump.

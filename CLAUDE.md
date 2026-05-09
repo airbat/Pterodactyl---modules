@@ -184,9 +184,9 @@ npm run lint                 # ESLint frontend
 npm run format               # Prettier frontend
 
 # Blueprint
-blueprint -i pterodactyl-mc-plugins   # Install dans une instance locale
-blueprint -r pterodactyl-mc-plugins   # Remove
-blueprint -f pterodactyl-mc-plugins   # Reinstall (force)
+blueprint -i pteromcplugins           # Install (identifiant Blueprint = a–z, cf. conf.yml)
+blueprint -r pteromcplugins           # Remove
+blueprint -f pteromcplugins           # Reinstall (force)
 
 # Cache (artisan custom)
 php artisan pmcp:cache:flush          # Vider le cache des providers
@@ -194,7 +194,7 @@ php artisan pmcp:scheduled-updates    # Forcer la passe scheduled (debug)
 
 # Build
 npm run build                # Build frontend assets
-./scripts/package.sh         # Génère .blueprint pour release
+./scripts/package-blueprint.sh   # Génère dist/pteromcplugins.blueprint pour release
 ```
 
 ---

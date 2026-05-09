@@ -1,0 +1,79 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "label": "client.php",
+      "file_type": "code",
+      "source_file": "ext/routes/client.php",
+      "source_location": "L1",
+      "id": "routes_client_php",
+      "community": 1,
+      "norm_label": "client.php"
+    },
+    {
+      "label": "extension.blade.php",
+      "file_type": "code",
+      "source_file": "ext/views/admin/extension.blade.php",
+      "source_location": null,
+      "id": "views_admin_extension_blade_php",
+      "community": 2,
+      "norm_label": "extension.blade.php"
+    },
+    {
+      "label": "2026_05_09_000001_create_pmcp_plugins_table.php",
+      "file_type": "code",
+      "source_file": "ext/database/migrations/2026_05_09_000001_create_pmcp_plugins_table.php",
+      "source_location": "L1",
+      "id": "database_migrations_2026_05_09_000001_create_pmcp_plugins_table_php",
+      "community": 0,
+      "norm_label": "2026_05_09_000001_create_pmcp_plugins_table.php"
+    },
+    {
+      "label": "up()",
+      "file_type": "code",
+      "source_file": "ext/database/migrations/2026_05_09_000001_create_pmcp_plugins_table.php",
+      "source_location": "L10",
+      "id": "2026_05_09_000001_create_pmcp_plugins_table_up",
+      "community": 0,
+      "norm_label": "up()"
+    },
+    {
+      "label": "down()",
+      "file_type": "code",
+      "source_file": "ext/database/migrations/2026_05_09_000001_create_pmcp_plugins_table.php",
+      "source_location": "L26",
+      "id": "2026_05_09_000001_create_pmcp_plugins_table_down",
+      "community": 0,
+      "norm_label": "down()"
+    }
+  ],
+  "links": [
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "ext/database/migrations/2026_05_09_000001_create_pmcp_plugins_table.php",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_src": "database_migrations_2026_05_09_000001_create_pmcp_plugins_table_php",
+      "_tgt": "2026_05_09_000001_create_pmcp_plugins_table_up",
+      "source": "database_migrations_2026_05_09_000001_create_pmcp_plugins_table_php",
+      "target": "2026_05_09_000001_create_pmcp_plugins_table_up",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "ext/database/migrations/2026_05_09_000001_create_pmcp_plugins_table.php",
+      "source_location": "L26",
+      "weight": 1.0,
+      "_src": "database_migrations_2026_05_09_000001_create_pmcp_plugins_table_php",
+      "_tgt": "2026_05_09_000001_create_pmcp_plugins_table_down",
+      "source": "database_migrations_2026_05_09_000001_create_pmcp_plugins_table_php",
+      "target": "2026_05_09_000001_create_pmcp_plugins_table_down",
+      "confidence_score": 1.0
+    }
+  ],
+  "hyperedges": []
+}

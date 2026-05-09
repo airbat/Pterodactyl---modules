@@ -59,7 +59,7 @@ Le mapping est testé par snapshot tests dans `tests/Unit/Providers/Modrinth/Map
 
 ## User-Agent
 
-Toujours envoyer un User-Agent identifiant : `pterodactyl-mc-plugins/<version> (+https://github.com/<org>/pterodactyl-mc-plugins)`.
+Toujours envoyer un User-Agent identifiant : `pteromcplugins/<version> (+https://github.com/<org>/pterodactyl-mc-plugins)` (slug dépôt Git ≠ identifiant Blueprint).
 
 C'est explicitement demandé par Modrinth (cf. https://docs.modrinth.com/api/) et requis par CurseForge.
 

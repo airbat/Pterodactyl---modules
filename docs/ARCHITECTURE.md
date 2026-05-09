@@ -204,7 +204,7 @@ Backend unique ; UI dupliquée volontairement entre `src/frontend/pterodactyl/` 
 Publication d’un fichier `.blueprint` via `./scripts/package.sh` (référencé dans `CLAUDE.md` § 9 une fois présent dans le repo). Installation admin :
 
 ```
-blueprint -i pterodactyl-mc-plugins
+blueprint -i pteromcplugins
 ```
 
 ## ADR résumées

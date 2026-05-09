@@ -2,9 +2,11 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Panels](https://img.shields.io/badge/panels-Pterodactyl%20%7C%20Pelican-blue)
-![Status](https://img.shields.io/badge/status-documentation%20skeleton-orange)
+![Status](https://img.shields.io/badge/status-extension%20bootstrap-yellow)
 
-> **État actuel** : ce dépôt contient la hiérarchie `CLAUDE.md`, la documentation d’architecture/conventions et un stub Blueprint (`conf.yml`). Le code applicatif (routes, jobs, providers HTTP, UI) arrive dans des itérations suivantes.
+> **État actuel** : hiérarchie `CLAUDE.md`, documentation, `conf.yml` Blueprint, première route client `/health`, vue admin minimale, migration `pmcp_plugins` de base, script `scripts/package-blueprint.sh`. Les providers Modrinth/CurseForge et l’UI dashboard arrivent ensuite.
+
+> **Identifiant Blueprint** : `pteromcplugins` (lettres minuscules uniquement, contrainte Blueprint). Le nom du dépôt Git peut rester `pterodactyl-mc-plugins`.
 
 ## Pitch
 
@@ -28,6 +30,13 @@
 - Gestion édition des fichiers de configuration courants (YAML / TOML / JSON)
 - Presets réutilisables (listes cohérentes de plugins pour plusieurs serveurs)
 
+Pour **build** l’archive depuis ce dépôt (hors CI) :
+
+```bash
+./scripts/package-blueprint.sh
+# produit dist/pteromcplugins.blueprint (ignoré par git : *.blueprint)
+```
+
 ## Compatibilité cible
 
 | Composant | Version indicative |
@@ -43,14 +52,14 @@ Les versions exactes seront gelées lorsque le packaging `.blueprint` sera publi
 
 ```bash
 # 1. Télécharger le .blueprint depuis Releases
-wget https://github.com/VOTRE_ORG/pterodactyl-mc-plugins/releases/latest/download/pterodactyl-mc-plugins.blueprint
+wget https://github.com/VOTRE_ORG/pterodactyl-mc-plugins/releases/latest/download/pteromcplugins.blueprint
 
 # 2. Placer dans le répertoire du panel
-sudo mv pterodactyl-mc-plugins.blueprint /var/www/pterodactyl/
+sudo mv pteromcplugins.blueprint /var/www/pterodactyl/
 
-# 3. Installer via Blueprint
+# 3. Installer via Blueprint (identifiant = pteromcplugins)
 cd /var/www/pterodactyl
-sudo blueprint -i pterodactyl-mc-plugins
+sudo blueprint -i pteromcplugins
 ```
 
 Remplace `VOTRE_ORG` par l’organisation GitHub réelle lorsque le dépôt est public.
@@ -74,6 +83,10 @@ Ne jamais exposer ces clés côté navigateur ; les appels restent backend.
 3. **Mettre à jour** ou **annuler** (rollback) après un backup automatique.
 
 ## FAQ
+
+### Pourquoi l’identifiant Blueprint (`pteromcplugins`) diffère du nom du dépôt Git ?
+
+[Blueprint](https://blueprint.zip/docs/configs/confyml) impose `info.identifier` en **lettres minuscules `a-z` uniquement**. Le dépôt Git peut garder des tirets (`pterodactyl-mc-plugins`), les commandes CLI utilisent `pteromcplugins`.
 
 ### Pourquoi licence MIT ?
 
