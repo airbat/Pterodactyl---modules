@@ -28,6 +28,15 @@ PMCP — Plugins Minecraft
                 @endif
                 <p><strong>{name}</strong> — identifiant <code>{identifier}</code>, version <code>{version}</code>.</p>
                 <p>Interface policies et catalogue : développement en cours.</p>
+                <div class="callout callout-info">
+                    <p>
+                        <strong>CurseForge</strong> —
+                        définir dans le <code>.env</code> du panel la variable
+                        <code>CURSEFORGE_API_KEY</code> (ou <code>CF_API_KEY</code>) avec votre clé officielle
+                        CurseForge Core, puis recharger PHP / le conteneur Panel. Sans clé, le dashboard n’active pas
+                        la source CurseForge.
+                    </p>
+                </div>
                 <p class="text-muted">
                     Endpoint client santé&nbsp;:
                     <code>GET /api/client/extensions/{identifier}/health</code>
