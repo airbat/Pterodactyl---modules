@@ -190,7 +190,7 @@ blueprint -f pteromcplugins           # Reinstall (force)
 
 # Cache (artisan custom)
 php artisan pmcp:cache:flush          # Vider le cache des providers
-php artisan pmcp:scheduled-updates    # Forcer la passe scheduled (debug)
+php artisan pteromcplugins:scheduled-updates [--force] [--dry-run] # Passe cron (Blueprint data/console)
 
 # Build
 npm run build                # Build frontend assets

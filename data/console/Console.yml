@@ -1,0 +1,2 @@
+# Réf. https://blueprint.zip/docs/configs/consoleyml — signature panel : `{identifier}:{Signature}`
+- { Signature: 'scheduled-updates', Description: 'Passe automatique MAJ mods/plugins (cron serveur)', Path: 'scheduled-updates.php', Interval: 'everyMinute' }

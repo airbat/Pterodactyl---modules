@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace PteroMcPlugins\Services;
 
+require_once __DIR__ . '/PmcpModrinthRequiredDepsPlanner.php';
+
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Pterodactyl\Models\Server;
@@ -12,8 +14,113 @@ use Pterodactyl\Repositories\Wings\DaemonFileRepository;
 /** Pull Modrinth / CurseForge — partagé routes, presets, cron. */
 final class PmcpArtifactInstall
 {
-    /** @param  callable(string, array<string,mixed>): \Illuminate\Http\Client\Response  $modrinthGet */
+    /**
+     * @param  callable(string, array<string,mixed>): \Illuminate\Http\Client\Response  $modrinthGet
+     * @param  (callable(mixed): (?array<string,mixed>))|null                       $modrinthLatestFromVersionList
+     */
     public static function modrinth(
+        Server $server,
+        object $user,
+        string $projectId,
+        string $versionId,
+        ?string $directoryRaw,
+        bool $wantBackup,
+        string $backupContext,
+        callable $modrinthGet,
+        callable $validProjectId,
+        callable $normalizeInstallDirectory,
+        callable $defaultInstallDirectory,
+        callable $installBlockedByPolicy,
+        bool $resolveRequiredDependencies = false,
+        $modrinthLatestFromVersionList = null,
+    ): array {
+        if ($resolveRequiredDependencies) {
+            if ($modrinthLatestFromVersionList === null) {
+                throw new PmcpHttpException(500, 'Résolution des dépendances Modrinth : sélecteur de version absent.');
+            }
+
+            $pairs = PmcpModrinthRequiredDepsPlanner::buildOrderedPairs(
+                $projectId,
+                $versionId,
+                $modrinthGet,
+                $validProjectId,
+                $modrinthLatestFromVersionList,
+                $installBlockedByPolicy,
+            );
+
+            /** @var list<array<string,mixed>> $priorSummaries */
+            $priorSummaries = [];
+
+            $last = null;
+
+            foreach ($pairs as $idx => $tuple) {
+                $pId = (string) ($tuple[0] ?? '');
+                $vId = (string) ($tuple[1] ?? '');
+                if ($pId === '' || $vId === '') {
+                    throw new PmcpHttpException(500, 'Ordre des dépendances Modrinth incohérent.');
+                }
+
+                $nPairs = count($pairs);
+                $isLast = ($idx === $nPairs - 1);
+                $dirForPull = $isLast ? $directoryRaw : null;
+                $backupThis = $wantBackup && $isLast;
+
+                $last = self::modrinthSingle(
+                    $server,
+                    $user,
+                    $pId,
+                    $vId,
+                    $dirForPull,
+                    $backupThis,
+                    $backupContext,
+                    $modrinthGet,
+                    $validProjectId,
+                    $normalizeInstallDirectory,
+                    $defaultInstallDirectory,
+                    $installBlockedByPolicy,
+                );
+
+                if (! $isLast) {
+                    $priorSummaries[] = [
+                        'project_id' => $pId,
+                        'version_id' => $vId,
+                        'directory' => $last['directory'] ?? '',
+                        'filename' => $last['filename'] ?? null,
+                        'event_id' => $last['event_id'] ?? null,
+                    ];
+                }
+            }
+
+            if (! is_array($last)) {
+                throw new PmcpHttpException(500, 'Installation Modrinth : aucun artefact après résolution des dépendances.');
+            }
+
+            if ($priorSummaries !== []) {
+                $last['modrinth_required_dependency_installs'] = $priorSummaries;
+                $last['modrinth_install_chain_length'] = count($pairs);
+            }
+
+            return $last;
+        }
+
+        return self::modrinthSingle(
+            $server,
+            $user,
+            $projectId,
+            $versionId,
+            $directoryRaw,
+            $wantBackup,
+            $backupContext,
+            $modrinthGet,
+            $validProjectId,
+            $normalizeInstallDirectory,
+            $defaultInstallDirectory,
+            $installBlockedByPolicy,
+        );
+    }
+
+    /** @param  callable(string, array<string,mixed>): \Illuminate\Http\Client\Response  $modrinthGet */
+    private static function modrinthSingle(
         Server $server,
         object $user,
         string $projectId,

@@ -5,7 +5,6 @@ declare(strict_types=1);
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
@@ -20,6 +19,7 @@ require_once dirname(__DIR__) . '/app/Services/PmcpCheckUpdatesBatch.php';
 require_once dirname(__DIR__) . '/app/Services/PmcpWorkspacePath.php';
 require_once dirname(__DIR__) . '/app/Services/PmcpInstallBackupRestore.php';
 require_once dirname(__DIR__) . '/app/Services/PmcpPresetItems.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpInstallAddonRemove.php';
 
 /**
  * Routes étend `/api/client/extensions/{identifier}` (voir blueprint.zip/docs/concepts/routing).
@@ -30,259 +30,12 @@ require_once dirname(__DIR__) . '/app/Services/PmcpPresetItems.php';
  */
 
 /*
- * Aligné sur conf.yml info.version ; Blueprint doit remplacer la valeur au build.
- * Si le placeholder {version} reste (dev / chargement direct), on force un UA stable :
- * CurseForge / Cloudflare rejettent souvent un User-Agent avec des accolades ou ambigu.
+ * UA / Modrinth & CurseForge : centralisé dans PmcpClientHttpDelegates (cron + routes).
  */
-$pmcpExtensionVersion = '{version}';
-if (! is_string($pmcpExtensionVersion) || $pmcpExtensionVersion === '' || $pmcpExtensionVersion === '{version}') {
-    $pmcpExtensionVersion = '0.7.3-dev';
-}
+require_once dirname(__DIR__) . '/app/Services/PmcpClientHttpDelegates.php';
 
-$modrinthBase = 'https://api.modrinth.com/v2';
-$modrinthUa = 'pteromcplugins/' . $pmcpExtensionVersion . ' (+https://blueprint.zip)';
-
-/** @var callable(string, array<string, mixed> = []): \Illuminate\Http\Client\Response $modrinthGet */
-$modrinthGet = static function (string $path, array $query = []) use ($modrinthBase, $modrinthUa) {
-    return Http::timeout(25)
-        ->withHeaders([
-            'Accept' => 'application/json',
-            'User-Agent' => $modrinthUa,
-        ])
-        ->get($modrinthBase . $path, $query);
-};
-
-$curseForgeBase = 'https://api.curseforge.com/v1';
-$curseForgeGameIdMc = 432;
-$curseForgeUa = 'pteromcplugins/' . $pmcpExtensionVersion . ' (+https://blueprint.zip) curseforge-proxy';
-
-/** @var callable(string): ?string */
-$curseForgePickEnvRaw = static function (string $envKey): ?string {
-    $candidates = [
-        isset($_ENV[$envKey]) && is_string($_ENV[$envKey]) ? $_ENV[$envKey] : null,
-        isset($_SERVER[$envKey]) && is_string($_SERVER[$envKey]) ? $_SERVER[$envKey] : null,
-    ];
-    $fromGetenv = getenv($envKey);
-    if (is_string($fromGetenv) && $fromGetenv !== '') {
-        $candidates[] = $fromGetenv;
-    }
-    $fromEnv = env($envKey);
-    if (is_string($fromEnv) && $fromEnv !== '') {
-        $candidates[] = $fromEnv;
-    }
-
-    foreach ($candidates as $raw) {
-        if (! is_string($raw)) {
-            continue;
-        }
-        $t = trim($raw);
-        if ($t === '') {
-            continue;
-        }
-        /* Guillemets résiduels si .env copié à la main. */
-        $t = trim($t, " \t\n\r\0\x0B\"'");
-
-        return $t !== '' ? $t : null;
-    }
-
-    return null;
-};
-
-/** @var callable(): ?string $curseForgeApiKey */
-$curseForgeApiKey = static function () use ($curseForgePickEnvRaw): ?string {
-    foreach (['CURSEFORGE_API_KEY', 'CF_API_KEY'] as $envKey) {
-        $v = $curseForgePickEnvRaw($envKey);
-        if ($v !== null) {
-            return $v;
-        }
-    }
-
-    return null;
-};
-
-/**
- * @param  array<string, mixed>  $query
- * @return (\Illuminate\Http\Client\Response)|false false si aucune clé API
- */
-$curseForgeGet = static function (string $path, array $query = []) use ($curseForgeBase, $curseForgeUa, $curseForgeApiKey) {
-    $key = $curseForgeApiKey();
-    if ($key === null) {
-        return false;
-    }
-
-    return Http::timeout(30)
-        ->withHeaders([
-            'Accept' => 'application/json',
-            'User-Agent' => $curseForgeUa,
-            'x-api-key' => $key,
-        ])
-        ->get($curseForgeBase . $path, $query);
-};
-
-/**
- * Lorque CURSEFORGE_API_KEY est définie mais refusée par l’API (401/403), on évite
- * de répondre 502 générique comme pour une panne upstream.
- *
- * @return non-empty-string|null
- */
-$curseForgeAuthFailureMessage = static function (\Illuminate\Http\Client\Response $r): ?string {
-    $c = $r->status();
-    if ($c === 401 || $c === 403) {
-        return 'CurseForge : accès refusé par l’API (HTTP ' . $c . '). Vérifiez une clé créée sur https://console.curseforge.com/ dans le .env du panel (CURSEFORGE_API_KEY ou CF_API_KEY), sans guillemets ni espaces parasites ; après toute modification du .env exécutez `php artisan config:clear`. Si la clé est sure, un plafond de débit ou un filtrage IP (403 côté CDN) est aussi possible.';
-    }
-
-    return null;
-};
-
-/** @return JsonResponse|null */
-$curseForgeAuthFailureHttp = static function (\Illuminate\Http\Client\Response $r) use ($curseForgeAuthFailureMessage): ?JsonResponse {
-    $msg = $curseForgeAuthFailureMessage($r);
-    if ($msg === null) {
-        return null;
-    }
-
-    return response()->json([
-        'message' => $msg,
-        'status' => $r->status(),
-    ], 503);
-};
-
-/** classId officiel Minecraft Java CurseForge — cf. docs/PROVIDERS.md */
-$curseForgeClassToProjectType = static function (?int $classId): string {
-    return match ($classId) {
-        5 => 'plugin',
-        6 => 'mod',
-        4471 => 'modpack',
-        12 => 'resourcepack',
-        default => 'mod',
-    };
-};
-
-$curseForgePageUrl = static function (int $classId, string $slug): ?string {
-    $slug = trim($slug);
-    if ($slug === '') {
-        return null;
-    }
-
-    $segment = match ($classId) {
-        5 => 'bukkit-plugins',
-        4471 => 'modpacks',
-        12 => 'texture-packs',
-        default => 'mc-mods',
-    };
-
-    return 'https://www.curseforge.com/minecraft/' . $segment . '/' . rawurlencode($slug);
-};
-
-$curseForgeCfResponseData = static function (mixed $json): ?array {
-    if (! is_array($json) || ! isset($json['data']) || ! is_array($json['data'])) {
-        return null;
-    }
-
-    return $json['data'];
-};
-
-$validCurseForgeModId = static function (string $id): bool {
-    if (! ctype_digit($id)) {
-        return false;
-    }
-
-    $n = (int) $id;
-
-    return $n > 0 && $n <= 2147483646;
-};
-
-$validProjectId = static function (string $id): bool {
-    return (bool) preg_match('/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/', $id);
-};
-
-/** Filtre version MC transmis à Modrinth/CurseForge (conservateur). */
-$validMcVersionFilter = static function (string $raw): bool {
-    $v = trim($raw);
-
-    return $v !== ''
-        && (bool) preg_match('/^[A-Za-z0-9.+_\-]{1,48}$/', $v);
-};
-
-/** Résumé changelog / notes pour l’UI (vérif MAJ). */
-$pmcpTruncatePlain = static function (string $text, int $maxLen = 680): string {
-    $t = trim(preg_replace('/\s+/u', ' ', $text) ?? '');
-    if ($t === '') {
-        return '';
-    }
-    if (function_exists('mb_strlen') && function_exists('mb_substr') && mb_strlen($t) > $maxLen) {
-        return mb_substr($t, 0, $maxLen) . '…';
-    }
-
-    return strlen($t) > $maxLen ? substr($t, 0, $maxLen) . '…' : $t;
-};
-
-/**
- * Blocage installation par identifiant projet amont (Modrinth / CurseForge).
- * Variable panel optionnelle : PMCP_BLOCKLIST_PROJECT_IDS=id1,id2,modrinth:abc,curseforge:994854
- * (préfixe provider pour lever toute ambiguïté si le même id existe sur les deux sources).
- */
-$pmcpInstallBlockedByPolicy = static function (string $provider, string $projectId): bool {
-    $raw = env('PMCP_BLOCKLIST_PROJECT_IDS');
-    if (! is_string($raw)) {
-        return false;
-    }
-    $raw = trim($raw);
-    if ($raw === '') {
-        return false;
-    }
-
-    $prov = strtolower($provider);
-    $pid = strtolower(ltrim($projectId));
-
-    foreach (array_map('trim', explode(',', $raw)) as $token) {
-        if ($token === '') {
-            continue;
-        }
-        $t = strtolower($token);
-        if (str_contains($t, ':')) {
-            $parts = explode(':', $t, 2);
-            if (count($parts) === 2 && $parts[0] === $prov && $parts[1] === $pid) {
-                return true;
-            }
-        } elseif ($t === $pid) {
-            return true;
-        }
-    }
-
-    return false;
-};
-
-/** Choisit la version Modrinth la plus récente dans une liste /project/.../version. */
-$modrinthLatestFromVersionList = static function (mixed $body): ?array {
-    $list = is_array($body) ? $body : [];
-    $best = null;
-
-    /** @var string $bestDt */
-    $bestDt = '';
-
-    foreach ($list as $row) {
-        if (! is_array($row)) {
-            continue;
-        }
-
-        $id = isset($row['id']) ? (string) $row['id'] : '';
-
-        if ($id === '') {
-            continue;
-        }
-
-        $dt = isset($row['date_published']) ? (string) $row['date_published'] : '';
-
-        if ($best === null || ($dt !== '' && strcmp($dt, $bestDt) > 0)) {
-            $best = $row;
-            $bestDt = $dt;
-        }
-
-    }
-
-    return $best;
-};
+$pmcpDelegates = \PteroMcPlugins\Services\PmcpClientHttpDelegates::create();
+extract($pmcpDelegates, EXTR_OVERWRITE);
 
 /**
  * Contexte MC / Panel pour filtrage catalogue côté client.
@@ -306,23 +59,6 @@ $resolveServer = static function (string $token) {
             }
         })
         ->first();
-};
-
-/** Interdit path traversal ; retourne chemin type `/plugins`. */
-$normalizeInstallDirectory = static function (?string $raw): ?string {
-    if ($raw === null || $raw === '') {
-        return null;
-    }
-    $dir = str_replace('\\', '/', trim($raw));
-    if (str_contains($dir, '..')) {
-        return null;
-    }
-    $dir = '/' . ltrim($dir, '/');
-    if ($dir === '/') {
-        return '/';
-    }
-
-    return $dir;
 };
 
 $validCronExpression = static function (string $expr): bool {
@@ -405,145 +141,9 @@ $validCronExpression = static function (string $expr): bool {
     return true;
 };
 
-/**
- * Infère si le serveur Panel est plutôt un stack « plugins » (Paper, proxies) ou « mods » (Forge/Fabric dédié).
- *
- * @return bool|null true = privilégier /plugins en cas de conflit loaders, false = /mods, null = pas d’indice fort
- */
-$serverArtifactPreference = static function (\Pterodactyl\Models\Server $server): ?bool {
-    $server->loadMissing('egg', 'nest');
-
-    $text = strtolower(trim(
-        (string) ($server->egg?->name ?? '')
-            . ' ' . (string) ($server->nest?->name ?? '')
-            . ' ' . (string) ($server->startup ?? '')
-            . ' ' . (string) ($server->image ?? '')
-    ));
-
-    if ($text === '') {
-        return null;
-    }
-
-    // Stacks mods Java — préférer /mods lorsque l’artefact est ambigu (ex. jar Forge + autre).
-    if (preg_match('/\b(forge|neo[\s_-]?forge)\b/i', $text)) {
-        return false;
-    }
-
-    // Œuf Fabric / Quilt « pur » (sans famille Paper/Spigot dans le libellé) → mods.
-    if (preg_match('/\b(fabric|quilt)\b/i', $text)
-        && !preg_match('/\b(paper|spigot|purpur|folia|pufferfish|craftbukkit|bukkit|velocity|waterfall|bungee|arclight|mohist|cardboard)\b/i', $text)) {
-        return false;
-    }
-
-    // Paper / forks Bukkit / proxies — cibles typiques /plugins pour artefacts « hybrides » Modrinth (fabric + paper, etc.).
-    if (preg_match(
-        '/\b(paper|purpur|folia|pufferfish|spigot|craftbukkit|bukkit|tuinity|airplane|leaf|velocity|waterfall|bungeecord|bungee|travertine|hexacord)\b/i',
-        $text
-    )) {
-        return true;
-    }
-
-    // PocketMine, Bedrock addons eggs souvent nommés explicitement ; plugins PHAR côté PM.
-    if (preg_match('/\b(pocketmine|pmmp)\b/i', $text)) {
-        return true;
-    }
-
-    return null;
-};
-
-/**
- * Répertoire d’installation par défaut pour un projet CurseForge (classId Mc + œuf Panel).
- */
-$defaultInstallDirectoryCurseForge = static function (?int $classId, \Pterodactyl\Models\Server $server) use ($serverArtifactPreference): string {
-    if ($classId === 5) {
-        return '/plugins';
-    }
-
-    if (in_array($classId, [6, 4471], true)) {
-        return '/mods';
-    }
-
-    $pref = $serverArtifactPreference($server);
-    if ($pref === true) {
-        return '/plugins';
-    }
-    if ($pref === false) {
-        return '/mods';
-    }
-
-    return '/mods';
-};
-
-/**
- * Répertoire cible par défaut (racine sandbox serveur) d’après loaders, type projet Modrinth et œuf Panel.
- *
- * @param  array<string, mixed>  $version
- */
-$defaultInstallDirectory = static function (array $version, string $projectId, \Pterodactyl\Models\Server $server) use ($modrinthGet, $serverArtifactPreference): string {
-    $loaders = array_map('strtolower', is_array($version['loaders'] ?? null) ? $version['loaders'] : []);
-    $modLike = ['fabric', 'forge', 'quilt', 'neoforge'];
-    $pluginLike = ['bukkit', 'spigot', 'paper', 'purpur', 'velocity', 'bungeecord', 'waterfall', 'sponge', 'folia'];
-
-    $hasModLoader = false;
-    $hasPluginLoader = false;
-    foreach ($loaders as $l) {
-        if (in_array($l, $modLike, true)) {
-            $hasModLoader = true;
-        }
-        if (in_array($l, $pluginLike, true)) {
-            $hasPluginLoader = true;
-        }
-    }
-
-    $pref = $serverArtifactPreference($server);
-
-    if ($hasModLoader && $hasPluginLoader) {
-        if ($pref === true) {
-            return '/plugins';
-        }
-        if ($pref === false) {
-            return '/mods';
-        }
-
-        try {
-            $pr = $modrinthGet('/project/' . rawurlencode($projectId), []);
-            if ($pr->successful()) {
-                $pj = $pr->json();
-                $ptype = is_array($pj) && isset($pj['project_type']) ? (string) $pj['project_type'] : 'mod';
-
-                return $ptype === 'plugin' ? '/plugins' : '/mods';
-            }
-        } catch (\Throwable) {
-            // fallback ci-dessous
-        }
-
-        return '/mods';
-    }
-
-    if ($hasModLoader && !$hasPluginLoader) {
-        return '/mods';
-    }
-    if ($hasPluginLoader && !$hasModLoader) {
-        return '/plugins';
-    }
-
-    try {
-        $pr = $modrinthGet('/project/' . rawurlencode($projectId), []);
-        if ($pr->successful()) {
-            $pj = $pr->json();
-            $ptype = is_array($pj) && isset($pj['project_type']) ? (string) $pj['project_type'] : 'mod';
-
-            return $ptype === 'plugin' ? '/plugins' : '/mods';
-        }
-    } catch (\Throwable) {
-        // fallback ci-dessous
-    }
-
-    return '/mods';
-};
-
 Route::post('/install/modrinth', static function (Request $request) use (
     $modrinthGet,
+    $modrinthLatestFromVersionList,
     $pmcpInstallBlockedByPolicy,
     $validProjectId,
     $resolveServer,
@@ -561,6 +161,7 @@ Route::post('/install/modrinth', static function (Request $request) use (
         'directory' => ['sometimes', 'nullable', 'string', 'max:255'],
         'backup_before' => ['sometimes', 'boolean'],
         'backup_context' => ['sometimes', 'nullable', 'string', 'max:48', 'regex:/^[a-z0-9_-]+$/'],
+        'resolve_dependencies' => ['sometimes', 'boolean'],
     ]);
 
     if ($validator->fails()) {
@@ -611,6 +212,7 @@ Route::post('/install/modrinth', static function (Request $request) use (
     $dirInput = $data['directory'] ?? null;
     $wantBackup = $request->boolean('backup_before');
     $bc = isset($data['backup_context']) ? trim((string) $data['backup_context']) : '';
+    $resolveDeps = $request->boolean('resolve_dependencies');
 
     try {
         $out = \PteroMcPlugins\Services\PmcpArtifactInstall::modrinth(
@@ -626,6 +228,8 @@ Route::post('/install/modrinth', static function (Request $request) use (
             $normalizeInstallDirectory,
             $defaultInstallDirectory,
             $pmcpInstallBlockedByPolicy,
+            $resolveDeps,
+            $resolveDeps ? $modrinthLatestFromVersionList : null,
         );
     } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
         return response()->json(
@@ -803,6 +407,58 @@ Route::get('/install/history', static function (Request $request) use ($resolveS
     }
 
     return response()->json(['items' => $items]);
+});
+
+Route::post('/install/remove-addon', static function (Request $request) use ($resolveServer): JsonResponse {
+    $validator = Validator::make($request->all(), [
+        'server' => ['required', 'string', 'max:64'],
+        'event_id' => ['required', 'integer', 'min:1'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $data = $validator->validated();
+
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $server = $resolveServer($data['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+
+    $server->loadMissing('subusers');
+
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+
+    try {
+        $server->validateCurrentState();
+    } catch (\Pterodactyl\Exceptions\Http\Server\ServerStateConflictException) {
+        return response()->json([
+            'message' => 'Le serveur ne permet pas cette action pour le moment (installation, suspension, transfert, etc.).',
+        ], 409);
+    }
+
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_DELETE, $server)) {
+        return response()->json(['message' => 'Permission refusée : suppression de fichiers sur ce serveur.'], 403);
+    }
+
+    try {
+        $out = \PteroMcPlugins\Services\PmcpInstallAddonRemove::runForInstallEvent($server, (int) $data['event_id']);
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(
+            array_merge(['message' => $e->getMessage()], $e->extra),
+            $e->status
+        );
+    }
+
+    return response()->json($out);
 });
 
 Route::get('/server/context', static function (Request $request) use ($resolveServer, $serverMcContextPayload): JsonResponse {
@@ -1737,6 +1393,78 @@ Route::post('/presets', static function (Request $request): JsonResponse {
     }
 
     return response()->json(['message' => 'Preset enregistré.', 'id' => (int) $id]);
+});
+
+Route::put('/presets', static function (Request $request): JsonResponse {
+    if (! Schema::hasTable('pmcp_presets')) {
+        return response()->json(['message' => 'Table presets absente (migrate).'], 503);
+    }
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $validator = Validator::make($request->all(), [
+        'id' => ['required', 'integer', 'min:1'],
+        'name' => ['required', 'string', 'max:128'],
+        'description' => ['sometimes', 'nullable', 'string', 'max:2000'],
+        'items' => ['required', 'array', 'min:1'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $data = $validator->validated();
+
+    try {
+        $items = \PteroMcPlugins\Services\PmcpPresetItems::coerce($data['items']);
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(['message' => $e->getMessage()], $e->status);
+    }
+
+    $presetId = (int) $data['id'];
+    $presetRow = DB::table('pmcp_presets')->where('id', $presetId)->first(['user_id']);
+
+    if ($presetRow === null) {
+        return response()->json(['message' => 'Preset introuvable.'], 404);
+    }
+    $ownerUid = (int) $presetRow->user_id;
+    if (! $user->root_admin && $ownerUid !== (int) $user->id) {
+        return response()->json(['message' => 'Preset introuvable.'], 404);
+    }
+
+    $nameTrim = trim((string) $data['name']);
+    $dup = DB::table('pmcp_presets')
+        ->where('user_id', $ownerUid)
+        ->where('name', $nameTrim)
+        ->where('id', '<>', $presetId)
+        ->exists();
+
+    if ($dup) {
+        return response()->json(['message' => 'Un preset du même nom existe déjà pour ce compte.'], 422);
+    }
+
+    $now = now();
+
+    try {
+        $upd = DB::table('pmcp_presets')
+            ->where('id', $presetId)
+            ->when(! $user->root_admin, static fn ($q) => $q->where('user_id', (int) $user->id))
+            ->update([
+                'name' => $nameTrim,
+                'description' => isset($data['description']) && is_string($data['description'])
+                    ? trim($data['description']) : null,
+                'items' => json_encode($items),
+                'updated_at' => $now,
+            ]);
+    } catch (\Throwable) {
+        return response()->json(['message' => 'Erreur BD lors de la mise à jour.'], 422);
+    }
+
+    if ($upd === 0) {
+        return response()->json(['message' => 'Preset introuvable.'], 404);
+    }
+
+    return response()->json(['message' => 'Preset mis à jour.', 'id' => $presetId]);
 });
 
 Route::delete('/presets', static function (Request $request): JsonResponse {

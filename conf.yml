@@ -27,5 +27,8 @@ requests:
   routers:
     client: "ext/routes/client.php"
 
+data:
+  console: "data/console"
+
 database:
   migrations: "ext/database/migrations"

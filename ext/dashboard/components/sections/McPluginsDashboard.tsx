@@ -100,6 +100,14 @@ type InstallModrinthResponse = {
     restart_recommended: boolean;
     event_id?: number | null;
     backup?: { id: number | null; archive: string | null } | null;
+    modrinth_required_dependency_installs?: Array<{
+        project_id?: string;
+        version_id?: string;
+        directory?: string;
+        filename?: string | null;
+        event_id?: number | null;
+    }>;
+    modrinth_install_chain_length?: number;
 };
 
 type InstallHistoryItem = {
@@ -116,6 +124,12 @@ type InstallHistoryItem = {
 type InstallHistoryApiResponse = {
     items: InstallHistoryItem[];
     migration_pending?: boolean;
+};
+
+type RemoveInstalledAddonApiResponse = {
+    message: string;
+    root: string;
+    file: string;
 };
 
 type ServerContextPayload = {
@@ -623,6 +637,10 @@ export default function McPluginsDashboard(): React.ReactElement {
 
     const [installingVersionId, setInstallingVersionId] = useState<string | null>(null);
     const [catalogBackupBefore, setCatalogBackupBefore] = useState(false);
+    /** Modrinth : installer d’abord les dépendances « required » avant l’artefact principal */
+    const [catalogResolveDependencies, setCatalogResolveDependencies] = useState(false);
+    /** Même comportement depuis l’historique (Rollback / Installer MAJ) */
+    const [historyResolveDependencies, setHistoryResolveDependencies] = useState(false);
     const [installOk, setInstallOk] = useState<string | null>(null);
     const [installErr, setInstallErr] = useState<string | null>(null);
 
@@ -645,6 +663,7 @@ export default function McPluginsDashboard(): React.ReactElement {
     /** Ligne historique dont la mise à jour rapide (« Installer MAJ ») est en cours */
     const [historyQuickUpdateRowId, setHistoryQuickUpdateRowId] = useState<number | null>(null);
     const [historyRollbackRowId, setHistoryRollbackRowId] = useState<number | null>(null);
+    const [historyRemoveRowId, setHistoryRemoveRowId] = useState<number | null>(null);
     const [scheduleCfg, setScheduleCfg] = useState<ScheduleApiPayload | null>(null);
     const [scheduleErr, setScheduleErr] = useState<string | null>(null);
     const [scheduleSaveBusy, setScheduleSaveBusy] = useState(false);
@@ -683,6 +702,8 @@ export default function McPluginsDashboard(): React.ReactElement {
     const [presetApplyBusyId, setPresetApplyBusyId] = useState<number | null>(null);
     const [presetBackupBeforeApply, setPresetBackupBeforeApply] = useState(true);
     const [presetApplyMsg, setPresetApplyMsg] = useState<string | null>(null);
+    /** Édition d’un preset existant ; null = mode création */
+    const [presetEditId, setPresetEditId] = useState<number | null>(null);
 
     const pinnedForSelectedProject = useMemo((): PinApiItem | undefined => {
         if (!selectedProjectId) return undefined;
@@ -772,13 +793,21 @@ export default function McPluginsDashboard(): React.ReactElement {
         async (
             h: InstallHistoryItem,
             versionId: string,
-            opts?: { backup_before?: boolean; backup_context?: 'catalog' | 'history' | 'scheduled' }
+            opts?: {
+                backup_before?: boolean;
+                backup_context?: 'catalog' | 'history' | 'scheduled';
+                /** Modrinth uniquement ; ignore sur CurseForge */
+                resolve_dependencies?: boolean;
+            }
         ): Promise<void> => {
             if (!serverId) return;
             const extras: Record<string, unknown> = {};
             if (opts?.backup_before === true) {
                 extras.backup_before = true;
                 extras.backup_context = opts.backup_context ?? 'history';
+            }
+            if (opts?.resolve_dependencies === true) {
+                extras.resolve_dependencies = true;
             }
             if (h.provider === 'modrinth') {
                 await postJson(`${EXT_BASE}/install/modrinth`, {
@@ -825,6 +854,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                 await installHistoryVersion(h, lid, {
                     backup_before: Boolean(scheduleCfg?.backup_before_update),
                     backup_context: 'history',
+                    resolve_dependencies: historyResolveDependencies,
                 });
 
                 await loadInstallHistory();
@@ -838,7 +868,7 @@ export default function McPluginsDashboard(): React.ReactElement {
 
         },
 
-        [serverId, updateStatusByKey, loadInstallHistory, installHistoryVersion, scheduleCfg]
+        [serverId, updateStatusByKey, loadInstallHistory, installHistoryVersion, scheduleCfg, historyResolveDependencies]
 
     );
 
@@ -847,7 +877,9 @@ export default function McPluginsDashboard(): React.ReactElement {
             if (!serverId) return;
             setHistoryRollbackRowId(h.id);
             try {
-                await installHistoryVersion(h, h.version_id);
+                await installHistoryVersion(h, h.version_id, {
+                    resolve_dependencies: historyResolveDependencies,
+                });
                 await loadInstallHistory();
             } catch (e: unknown) {
                 alert(e instanceof Error ? e.message : 'Rollback impossible');
@@ -855,7 +887,31 @@ export default function McPluginsDashboard(): React.ReactElement {
                 setHistoryRollbackRowId(null);
             }
         },
-        [serverId, loadInstallHistory, installHistoryVersion]
+        [serverId, loadInstallHistory, installHistoryVersion, historyResolveDependencies]
+    );
+
+    const removeInstalledAddonFromHistory = useCallback(
+        async (h: InstallHistoryItem): Promise<void> => {
+            if (!serverId || !h.filename) return;
+            const ok = window.confirm(
+                `Supprimer le fichier installé suivant via Wings ?\n\n${h.directory}/${h.filename}\n\n` +
+                    'Cela ne désinstalle pas les dépendances Modrinth installées automatiquement dans d’autres entrées.'
+            );
+            if (!ok) return;
+            setHistoryRemoveRowId(h.id);
+            try {
+                await postJson<RemoveInstalledAddonApiResponse>(`${EXT_BASE}/install/remove-addon`, {
+                    server: serverId,
+                    event_id: h.id,
+                });
+                await loadInstallHistory();
+            } catch (e: unknown) {
+                alert(e instanceof Error ? e.message : 'Suppression impossible');
+            } finally {
+                setHistoryRemoveRowId(null);
+            }
+        },
+        [serverId, loadInstallHistory]
     );
 
     const saveScheduleConfig = useCallback(async (): Promise<void> => {
@@ -1289,6 +1345,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                         ...(catalogBackupBefore
                             ? { backup_before: true, backup_context: 'catalog' as const }
                             : {}),
+                        ...(catalogResolveDependencies ? { resolve_dependencies: true } : {}),
                     });
                 } else {
                     const mid = Number.parseInt(selectedProjectId, 10);
@@ -1313,8 +1370,16 @@ export default function McPluginsDashboard(): React.ReactElement {
                     out.backup?.archive != null && out.backup.archive !== ''
                         ? ` — archive sauvegardée ${out.backup.archive}${out.backup.id != null ? ` (#${String(out.backup.id)})` : ''}`
                         : '';
+                const depN = Array.isArray(out.modrinth_required_dependency_installs)
+                    ? out.modrinth_required_dependency_installs.length
+                    : 0;
+                const depsPart =
+                    depN > 0
+                        ? ` — ${String(depN)} dépendance(s) Modrinth installée(s) avant l’artefact principal`
+                        : '';
+
                 setInstallOk(
-                    `${out.message} (${out.directory}${fn})${ev}${backupPart}. Redémarrage recommandé : ${out.restart_recommended ? 'oui' : 'non'}.`
+                    `${out.message} (${out.directory}${fn})${ev}${backupPart}${depsPart}. Redémarrage recommandé : ${out.restart_recommended ? 'oui' : 'non'}.`
                 );
                 void loadInstallHistory();
             } catch (e: unknown) {
@@ -1323,7 +1388,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                 setInstallingVersionId(null);
             }
         },
-        [catalogBackupBefore, catalogProvider, selectedProjectId, serverId, loadInstallHistory, minecraftVersionFilter, serverCtx]
+        [catalogBackupBefore, catalogResolveDependencies, catalogProvider, selectedProjectId, serverId, loadInstallHistory, minecraftVersionFilter, serverCtx]
     );
 
     const onSubmit = (e: React.FormEvent): void => {
@@ -1612,7 +1677,11 @@ export default function McPluginsDashboard(): React.ReactElement {
                                 </div>
                             )}
                             <p style={{ fontSize: '0.68rem', opacity: 0.6 }}>
-                                Ce bloc configure la planification ; l’exécution cron/queue globale est branchée côté panel.
+                                Ce bloc configure la planification serveur&nbsp;; le panel doit exécuter chaque minute la commande
+                                Artisan Blueprint{' '}
+                                <code>pteromcplugins:scheduled-updates</code> (dossier <code>data/console</code> lié dans{' '}
+                                <code>conf.yml</code>, intervalle <code>everyMinute</code>). Utilisez <code>--force</code> pour
+                                ignorer la fenêtre cron une fois,&nbsp;<code>--dry-run</code> pour journaliser sans installer.
                             </p>
                         </>
                     )}
@@ -2091,6 +2160,39 @@ export default function McPluginsDashboard(): React.ReactElement {
                                         )}
                                         <button
                                             type="button"
+                                            disabled={
+                                                presetApplyBusyId !== null || presetBusy || presetEditId !== null
+                                            }
+                                            onClick={() => {
+                                                setPresetErr(null);
+                                                setPresetApplyMsg(null);
+                                                setPresetEditId(p.id);
+                                                setPresetFormName(p.name);
+                                                setPresetFormDesc(p.description ?? '');
+                                                try {
+                                                    setPresetFormItemsRaw(JSON.stringify(p.items ?? [], null, 2));
+                                                } catch {
+                                                    setPresetFormItemsRaw('[]');
+                                                }
+                                            }}
+                                            style={{
+                                                padding: '3px 9px',
+                                                marginRight: '5px',
+                                                borderRadius: '4px',
+                                                border: '1px solid rgba(147,197,253,0.45)',
+                                                background: 'rgba(147,197,253,0.12)',
+                                                fontSize: '0.68rem',
+                                                cursor:
+                                                    presetApplyBusyId !== null || presetBusy || presetEditId !== null
+                                                        ? 'not-allowed'
+                                                        : 'pointer',
+                                                color: 'inherit',
+                                            }}
+                                        >
+                                            Modifier
+                                        </button>
+                                        <button
+                                            type="button"
                                             disabled={presetApplyBusyId !== null || presetBusy}
                                             onClick={() => {
                                                 if (
@@ -2137,7 +2239,38 @@ export default function McPluginsDashboard(): React.ReactElement {
                     ) : null
                 )}
                 <h4 style={{ fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.45rem', marginTop: '12px' }}>
-                    Créer un preset
+                    {presetEditId !== null ? (
+                        <>
+                            Modifier le preset&nbsp;<code>{String(presetEditId)}</code>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setPresetEditId(null);
+                                    setPresetErr(null);
+                                    setPresetFormName('');
+                                    setPresetFormDesc('');
+                                    setPresetFormItemsRaw(
+                                        '[{"provider":"modrinth","project_id":"fabric-api","version_id":"REPLACE_VERSION_ID","directory":"/mods"}]'
+                                    );
+                                }}
+                                style={{
+                                    marginLeft: '8px',
+                                    padding: '2px 8px',
+                                    borderRadius: '4px',
+                                    border: '1px solid rgba(148,163,184,0.45)',
+                                    background: 'transparent',
+                                    color: '#e5e7eb',
+                                    fontSize: '0.65rem',
+                                    cursor: 'pointer',
+                                    verticalAlign: 'middle',
+                                }}
+                            >
+                                Annuler édition
+                            </button>
+                        </>
+                    ) : (
+                        'Créer un preset'
+                    )}
                 </h4>
                 <label style={{ display: 'block', fontSize: '0.73rem', marginBottom: '6px' }}>
                     Nom&nbsp;
@@ -2199,15 +2332,27 @@ export default function McPluginsDashboard(): React.ReactElement {
                             setPresetErr(null);
                             setPresetBusy(true);
                             try {
-                                await postJson(`${EXT_BASE}/presets`, {
-                                    name: presetFormName.trim(),
-                                    description: presetFormDesc.trim() || undefined,
-                                    items,
-                                });
-                                await reloadPresets();
-                                setPresetApplyMsg('Preset créé.');
+                                if (presetEditId !== null) {
+                                    await putJson<{ message?: string }>(`${EXT_BASE}/presets`, {
+                                        id: presetEditId,
+                                        name: presetFormName.trim(),
+                                        description: presetFormDesc.trim() || undefined,
+                                        items,
+                                    });
+                                    await reloadPresets();
+                                    setPresetApplyMsg('Preset mis à jour.');
+                                    setPresetEditId(null);
+                                } else {
+                                    await postJson(`${EXT_BASE}/presets`, {
+                                        name: presetFormName.trim(),
+                                        description: presetFormDesc.trim() || undefined,
+                                        items,
+                                    });
+                                    await reloadPresets();
+                                    setPresetApplyMsg('Preset créé.');
+                                }
                             } catch (e: unknown) {
-                                setPresetErr(e instanceof Error ? e.message : 'Création impossible');
+                                setPresetErr(e instanceof Error ? e.message : 'Enregistrement impossible');
                             } finally {
                                 setPresetBusy(false);
                             }
@@ -2224,7 +2369,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                         cursor: presetBusy ? 'wait' : 'pointer',
                     }}
                 >
-                    Enregistrer le preset
+                    {presetEditId !== null ? 'Enregistrer les modifications' : 'Enregistrer le preset'}
                 </button>
             </section>
 
@@ -2248,12 +2393,29 @@ export default function McPluginsDashboard(): React.ReactElement {
                             flexWrap: 'wrap',
                             gap: '8px',
                             alignItems: 'center',
-
                             marginBottom: '0.65rem',
-
                         }}
-
                     >
+                        <label
+                            style={{
+                                fontSize: '0.69rem',
+                                opacity: 0.85,
+                                display: 'inline-flex',
+                                gap: '6px',
+                                alignItems: 'center',
+                                cursor: installHistoryLoading || scheduleRunBusy ? 'wait' : 'pointer',
+                                marginRight: '6px',
+                            }}
+                        >
+                            <input
+                                type="checkbox"
+                                checked={historyResolveDependencies}
+                                disabled={scheduleRunBusy || !serverId}
+                                onChange={(e) => setHistoryResolveDependencies(e.target.checked)}
+                            />
+                            Modrinth&nbsp;: résoudre les dépendances <code style={{ fontSize: '0.62rem' }}>required</code>{' '}
+                            (Rollback / Installer MAJ)
+                        </label>
                         <button
                             type="button"
                             disabled={installHistory.length === 0 || updateCheckBusy || installHistoryLoading || scheduleRunBusy}
@@ -2367,7 +2529,8 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                                 installHistoryLoading ||
                                                                 updateCheckBusy ||
                                                                 scheduleRunBusy ||
-                                                                historyRollbackRowId === h.id
+                                                                historyRollbackRowId === h.id ||
+                                                                historyRemoveRowId === h.id
                                                             }
                                                             onClick={() => void rollbackFromHistory(h)}
                                                             style={{
@@ -2382,7 +2545,8 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                                 cursor:
                                                                     installHistoryLoading ||
                                                                     updateCheckBusy ||
-                                                                    historyRollbackRowId === h.id
+                                                                    historyRollbackRowId === h.id ||
+                                                                    historyRemoveRowId === h.id
                                                                         ? 'wait'
                                                                         : 'pointer',
                                                             }}
@@ -2428,7 +2592,8 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                                 installHistoryLoading ||
                                                                 updateCheckBusy ||
                                                                 scheduleRunBusy ||
-                                                                historyQuickUpdateRowId === h.id
+                                                                historyQuickUpdateRowId === h.id ||
+                                                                historyRemoveRowId === h.id
                                                             }
                                                             onClick={() => void applyHistoryLatestUpdate(h)}
                                                             style={{
@@ -2442,8 +2607,9 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                                 cursor:
                                                                     installHistoryLoading ||
                                                                     updateCheckBusy ||
-                                                                scheduleRunBusy ||
-                                                                    historyQuickUpdateRowId === h.id
+                                                                    scheduleRunBusy ||
+                                                                    historyQuickUpdateRowId === h.id ||
+                                                                    historyRemoveRowId === h.id
                                                                         ? 'wait'
                                                                         : 'pointer',
                                                             }}
@@ -2487,7 +2653,51 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                 <td style={{ padding: '5px 6px' }}>
                                                     <code>{h.directory}</code>
                                                 </td>
-                                                <td style={{ padding: '5px 6px' }}>{h.filename || '—'}</td>
+                                                <td style={{ padding: '5px 6px', verticalAlign: 'top' }}>
+                                                    {h.filename ? (
+                                                        <>
+                                                            <code style={{ wordBreak: 'break-word', display: 'block' }}>
+                                                                {h.filename}
+                                                            </code>
+                                                            {serverId ? (
+                                                                <button
+                                                                    type="button"
+                                                                    disabled={
+                                                                        installHistoryLoading ||
+                                                                        updateCheckBusy ||
+                                                                        scheduleRunBusy ||
+                                                                        historyRemoveRowId === h.id ||
+                                                                        historyRollbackRowId === h.id ||
+                                                                        historyQuickUpdateRowId === h.id
+                                                                    }
+                                                                    onClick={() => void removeInstalledAddonFromHistory(h)}
+                                                                    style={{
+                                                                        marginTop: '6px',
+                                                                        display: 'block',
+                                                                        padding: '2px 6px',
+                                                                        fontSize: '0.6rem',
+                                                                        borderRadius: '3px',
+                                                                        border: '1px solid rgba(248,113,113,0.55)',
+                                                                        background: 'rgba(248,113,113,0.12)',
+                                                                        color: 'inherit',
+                                                                        cursor:
+                                                                            installHistoryLoading ||
+                                                                            updateCheckBusy ||
+                                                                            scheduleRunBusy ||
+                                                                            historyRemoveRowId === h.id
+                                                                                ? 'wait'
+                                                                                : 'pointer',
+                                                                    }}
+                                                                    title="Supprimer ce fichier (.jar / .jar.disabled, etc.) sur le volume Wings (même dossier que l’installation)."
+                                                                >
+                                                                    {historyRemoveRowId === h.id ? 'Suppression…' : 'Retirer'}
+                                                                </button>
+                                                            ) : null}
+                                                        </>
+                                                    ) : (
+                                                        '—'
+                                                    )}
+                                                </td>
                                                 <td style={{ padding: '5px 6px', verticalAlign: 'top' }}>
                                                     {!serverId ? null : pinRow ? (
                                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -2904,6 +3114,27 @@ export default function McPluginsDashboard(): React.ReactElement {
                             {installErr && (
                                 <p style={{ fontSize: '0.78rem', color: '#f87171', marginBottom: '0.5rem' }}>{installErr}</p>
                             )}
+                            <label
+                                style={{
+                                    fontSize: '0.72rem',
+                                    opacity: 0.82,
+                                    display: 'flex',
+                                    gap: '8px',
+                                    alignItems: 'center',
+                                    marginBottom: '0.55rem',
+                                    cursor:
+                                        serverId && catalogProvider === 'modrinth' ? 'pointer' : 'not-allowed',
+                                }}
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={catalogResolveDependencies}
+                                    disabled={!serverId || catalogProvider !== 'modrinth'}
+                                    onChange={(e) => setCatalogResolveDependencies(e.target.checked)}
+                                />
+                                Modrinth&nbsp;: résoudre et installer les dépendances&nbsp;
+                                <code>required</code> avant cet artefact (plusieurs pulls possibles).
+                            </label>
                             <label
                                 style={{
                                     fontSize: '0.72rem',

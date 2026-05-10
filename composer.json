@@ -3,7 +3,8 @@
   "description": "Extension Blueprint PteroMcPlugins — autoload dev + tests locaux",
   "license": "MIT",
   "require": {
-    "php": "^8.2"
+    "php": "^8.2",
+    "dragonmantank/cron-expression": "^3.3"
   },
   "require-dev": {
     "pestphp/pest": "^3.0"
