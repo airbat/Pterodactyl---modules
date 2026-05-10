@@ -37,6 +37,16 @@ PMCP — Plugins Minecraft
                         la source CurseForge.
                     </p>
                 </div>
+                <div class="callout callout-warning">
+                    <p>
+                        <strong>Blocage côté hébergeur (optionnel)</strong> —
+                        variable <code>PMCP_BLOCKLIST_PROJECT_IDS</code> : liste d’identifiants projet séparés par des
+                        virgules. Forme <code>modrinth:Qqg3nt6n</code> ou <code>curseforge:12345</code> pour cibler une
+                        source ; sinon l’ID seul s’applique aux deux. Les installations correspondantes sont refusées
+                        (HTTP 403). Après modification du <code>.env</code>, exécuter
+                        <code>php artisan config:clear</code>.
+                    </p>
+                </div>
                 <p class="text-muted">
                     Endpoint client santé&nbsp;:
                     <code>GET /api/client/extensions/{identifier}/health</code>

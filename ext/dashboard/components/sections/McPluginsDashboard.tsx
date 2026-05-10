@@ -147,6 +147,17 @@ type PinsApiResponse = {
 
 };
 
+type ScheduleApiPayload = {
+    scheduled_enabled: boolean;
+    backup_before_update: boolean;
+    cron_expression: string;
+    max_updates_per_run: number;
+    last_preview_at?: string | null;
+    updated_at?: string | null;
+    migration_pending?: boolean;
+    message?: string;
+};
+
 type UpdateCheckItem = {
     provider: string;
 
@@ -154,6 +165,8 @@ type UpdateCheckItem = {
     current_version_id: string;
     latest_version_id: string | null;
     latest_version_label: string | null;
+    /** Extrait API (Modrinth changelog / CurseForge changelogHtml), tronqué côté panel */
+    latest_changelog?: string | null;
     update_available: boolean;
     pinned_differs_from_latest?: boolean;
     pin: {
@@ -212,6 +225,38 @@ function fmtBytes(n: number): string {
     if (n < 1024) return `${n} o`;
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} Kio`;
     return `${(n / (1024 * 1024)).toFixed(1)} Mio`;
+}
+
+/** Alignement version MC déclarée par l’artefact vs filtre catalogue / hints œuf */
+type McCompatLevel = 'ok' | 'warn' | 'neutral';
+
+function mcVersionCompatible(a: string, b: string): boolean {
+    const x = a.trim().toLowerCase();
+    const y = b.trim().toLowerCase();
+    if (x === y) return true;
+    if (x.startsWith(y + '.') || y.startsWith(x + '.')) return true;
+    return false;
+}
+
+function mcCompatForVersion(
+    gameVersions: string[],
+    mcFilter: string,
+    serverHints: string[]
+): McCompatLevel {
+    const gv = (gameVersions ?? []).map((s) => s.trim()).filter(Boolean);
+    if (gv.length === 0) return 'neutral';
+
+    const filt = mcFilter.trim();
+    if (filt !== '') {
+        return gv.some((g) => mcVersionCompatible(g, filt)) ? 'ok' : 'warn';
+    }
+
+    const hints = (serverHints ?? []).map((s) => s.trim()).filter(Boolean);
+    if (hints.length > 0) {
+        return hints.some((h) => gv.some((g) => mcVersionCompatible(g, h))) ? 'ok' : 'warn';
+    }
+
+    return 'neutral';
 }
 
 function csrfHeaders(): Record<string, string> {
@@ -416,6 +461,12 @@ export default function McPluginsDashboard(): React.ReactElement {
     const [updateStatusByKey, setUpdateStatusByKey] = useState<Record<string, UpdateCheckItem>>({});
     const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
     const [updatesErr, setUpdatesErr] = useState<string | null>(null);
+    /** Ligne historique dont la mise à jour rapide (« Installer MAJ ») est en cours */
+    const [historyQuickUpdateRowId, setHistoryQuickUpdateRowId] = useState<number | null>(null);
+    const [scheduleCfg, setScheduleCfg] = useState<ScheduleApiPayload | null>(null);
+    const [scheduleErr, setScheduleErr] = useState<string | null>(null);
+    const [scheduleSaveBusy, setScheduleSaveBusy] = useState(false);
+    const [scheduleSaveOk, setScheduleSaveOk] = useState<string | null>(null);
 
     const pinnedForSelectedProject = useMemo((): PinApiItem | undefined => {
         if (!selectedProjectId) return undefined;
@@ -501,6 +552,83 @@ export default function McPluginsDashboard(): React.ReactElement {
         }
     }, [serverId, loadPins, runUpdateCheck]);
 
+    const applyHistoryLatestUpdate = useCallback(
+        async (h: InstallHistoryItem): Promise<void> => {
+            if (!serverId) return;
+            const rk = pinLookupKey(h.provider, h.project_id);
+            const up = updateStatusByKey[rk];
+            const lid = up?.latest_version_id;
+
+            if (!lid || !up?.update_available || up.error) return;
+
+            setHistoryQuickUpdateRowId(h.id);
+
+            try {
+                if (h.provider === 'modrinth') {
+                    await postJson(`${EXT_BASE}/install/modrinth`, {
+                        server: serverId,
+                        project_id: h.project_id,
+                        version_id: lid,
+                        directory: h.directory,
+                    });
+                } else if (h.provider === 'curseforge') {
+                    const mid = Number.parseInt(h.project_id, 10);
+                    const fid = Number.parseInt(lid, 10);
+                    if (Number.isNaN(mid) || Number.isNaN(fid)) {
+                        alert('Identifiants CurseForge invalides pour cette mise à jour.');
+                        return;
+                    }
+                    await postJson(`${EXT_BASE}/install/curseforge`, {
+                        server: serverId,
+                        mod_id: mid,
+                        file_id: fid,
+                        directory: h.directory,
+                    });
+                } else {
+                    return;
+                }
+
+                await loadInstallHistory();
+            } catch (e: unknown) {
+                alert(e instanceof Error ? e.message : 'Échec de la mise à jour');
+            } finally {
+
+                setHistoryQuickUpdateRowId(null);
+
+            }
+
+        },
+
+        [serverId, updateStatusByKey, loadInstallHistory]
+
+    );
+
+    const saveScheduleConfig = useCallback(async (): Promise<void> => {
+        if (!serverId || !scheduleCfg) return;
+        setScheduleSaveBusy(true);
+        setScheduleSaveOk(null);
+        setScheduleErr(null);
+        try {
+            const out = await postJson<ScheduleApiPayload>(`${EXT_BASE}/schedule`, {
+                server: serverId,
+                scheduled_enabled: Boolean(scheduleCfg.scheduled_enabled),
+                backup_before_update: Boolean(scheduleCfg.backup_before_update),
+                cron_expression: (scheduleCfg.cron_expression || '').trim(),
+                max_updates_per_run: Number(scheduleCfg.max_updates_per_run || 5),
+            });
+            setScheduleCfg((prev) => ({
+                ...(prev ?? out),
+                ...out,
+                migration_pending: false,
+            }));
+            setScheduleSaveOk(out.message || 'Planification enregistrée.');
+        } catch (e: unknown) {
+            setScheduleErr(e instanceof Error ? e.message : 'Échec enregistrement planification');
+        } finally {
+            setScheduleSaveBusy(false);
+        }
+    }, [serverId, scheduleCfg]);
+
     useEffect(() => {
         let cancel = false;
         if (!serverId) {
@@ -518,6 +646,10 @@ export default function McPluginsDashboard(): React.ReactElement {
             setServerCtx(null);
 
             setMinecraftVersionFilter('');
+            setHistoryQuickUpdateRowId(null);
+            setScheduleCfg(null);
+            setScheduleErr(null);
+            setScheduleSaveOk(null);
             return undefined;
         }
         loadInstallHistory().catch(() => {
@@ -544,6 +676,20 @@ export default function McPluginsDashboard(): React.ReactElement {
                 if (!cancel) {
                     setCtxErr(e.message);
                     setServerCtx(null);
+                }
+            });
+
+        fetchJson<ScheduleApiPayload>(`${EXT_BASE}/schedule?${new URLSearchParams({ server: serverId }).toString()}`)
+            .then((cfg) => {
+                if (!cancel) {
+                    setScheduleCfg(cfg);
+                    setScheduleErr(null);
+                }
+            })
+            .catch((e: Error) => {
+                if (!cancel) {
+                    setScheduleCfg(null);
+                    setScheduleErr(e.message);
                 }
             });
 
@@ -708,6 +854,19 @@ export default function McPluginsDashboard(): React.ReactElement {
                 setInstallErr('Cette version ne fournit pas de fichier principal téléchargeable.');
                 return;
             }
+            const compat = mcCompatForVersion(
+                row.game_versions || [],
+                minecraftVersionFilter,
+                serverCtx?.minecraft_versions_hint ?? []
+            );
+
+            if (compat === 'warn') {
+                const ok = window.confirm(
+                    'Compatibilité Minecraft : cette version ne correspond pas au filtre catalogue ni aux indications œuf détectées. Continuer l’installation ?'
+                );
+                if (!ok) return;
+            }
+
             setInstallingVersionId(row.id);
             setInstallErr(null);
             setInstallOk(null);
@@ -745,7 +904,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                 setInstallingVersionId(null);
             }
         },
-        [catalogProvider, selectedProjectId, serverId, loadInstallHistory]
+        [catalogProvider, selectedProjectId, serverId, loadInstallHistory, minecraftVersionFilter, serverCtx]
     );
 
     const onSubmit = (e: React.FormEvent): void => {
@@ -767,7 +926,8 @@ export default function McPluginsDashboard(): React.ReactElement {
                 Catalogue agrégé côté panel : <strong>Modrinth</strong> (sans clé) ou <strong>CurseForge</strong> (clé
                 API <code>CURSEFORGE_API_KEY</code> ou <code>CF_API_KEY</code> dans le <code>.env</code> du panel).
                 Installation : pull Wings vers <code>/plugins</code> ou <code>/mods</code> selon loaders / type de
-                projet.
+                projet. Les badges <strong>MC ✓ / MC ⚠</strong> comparent les versions Minecraft déclarées au filtre
+                catalogue et aux indications œuf ; une alerte demande confirmation avant installation si incohérence.
             </p>
             {serverId && (
                 <p style={{ fontSize: '0.75rem', opacity: 0.65, marginBottom: '0.5rem' }}>
@@ -845,6 +1005,119 @@ export default function McPluginsDashboard(): React.ReactElement {
                     )}
                 </div>
 
+            )}
+
+            {serverId && (
+                <section
+                    style={{
+                        borderRadius: '6px',
+                        border: '1px solid rgba(128,128,128,0.25)',
+                        padding: '1rem',
+                        marginBottom: '1rem',
+                        background: 'rgba(0,0,0,0.1)',
+                    }}
+                >
+                    <h3 style={{ fontSize: '0.875rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                        Mises à jour planifiées (serveur)
+                    </h3>
+                    {!scheduleCfg && !scheduleErr && (
+                        <p style={{ fontSize: '0.8rem', opacity: 0.75 }}>Chargement de la planification…</p>
+                    )}
+                    {scheduleErr && <p style={{ fontSize: '0.78rem', color: '#f87171' }}>{scheduleErr}</p>}
+                    {scheduleCfg?.migration_pending && (
+                        <p style={{ fontSize: '0.75rem', color: '#fbbf24' }}>
+                            Migration <code>pmcp_server_schedules</code> absente : exécutez <code>php artisan migrate</code>.
+                        </p>
+                    )}
+                    {scheduleCfg && !scheduleCfg.migration_pending && (
+                        <>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', marginBottom: '10px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={Boolean(scheduleCfg.scheduled_enabled)}
+                                        onChange={(e) =>
+                                            setScheduleCfg((prev) =>
+                                                prev ? { ...prev, scheduled_enabled: e.target.checked } : prev
+                                            )
+                                        }
+                                    />
+                                    Activer les mises à jour planifiées
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={Boolean(scheduleCfg.backup_before_update)}
+                                        onChange={(e) =>
+                                            setScheduleCfg((prev) =>
+                                                prev ? { ...prev, backup_before_update: e.target.checked } : prev
+                                            )
+                                        }
+                                    />
+                                    Backup avant update (flag config)
+                                </label>
+                            </div>
+                            <div style={{ ...inputBar, marginBottom: '8px' }}>
+                                <label style={{ fontSize: '0.74rem' }}>
+                                    Cron (UTC)
+                                    <input
+                                        style={{ ...input, marginTop: '4px', minWidth: '170px' }}
+                                        type="text"
+                                        value={scheduleCfg.cron_expression || ''}
+                                        onChange={(e) =>
+                                            setScheduleCfg((prev) =>
+                                                prev ? { ...prev, cron_expression: e.target.value } : prev
+                                            )
+                                        }
+                                    />
+                                </label>
+                                <label style={{ fontSize: '0.74rem' }}>
+                                    Max updates/run
+                                    <input
+                                        style={{ ...input, marginTop: '4px', width: '90px', minWidth: '90px' }}
+                                        type="number"
+                                        min={1}
+                                        max={50}
+                                        value={Number(scheduleCfg.max_updates_per_run || 5)}
+                                        onChange={(e) =>
+                                            setScheduleCfg((prev) =>
+                                                prev
+                                                    ? {
+                                                          ...prev,
+                                                          max_updates_per_run: Math.max(
+                                                              1,
+                                                              Math.min(50, Number.parseInt(e.target.value || '1', 10) || 1)
+                                                          ),
+                                                      }
+                                                    : prev
+                                            )
+                                        }
+                                    />
+                                </label>
+                                <button
+                                    type="button"
+                                    disabled={scheduleSaveBusy}
+                                    onClick={() => void saveScheduleConfig()}
+                                    style={{
+                                        padding: '7px 12px',
+                                        borderRadius: '4px',
+                                        border: '1px solid rgba(82,169,255,0.55)',
+                                        background: 'rgba(82,169,255,0.22)',
+                                        color: 'inherit',
+                                        cursor: scheduleSaveBusy ? 'wait' : 'pointer',
+                                        fontSize: '0.74rem',
+                                    }}
+                                >
+                                    {scheduleSaveBusy ? 'Enregistrement…' : 'Enregistrer planification'}
+                                </button>
+                            </div>
+                            {scheduleSaveOk && <p style={{ fontSize: '0.75rem', color: '#86efac' }}>{scheduleSaveOk}</p>}
+                            <p style={{ fontSize: '0.68rem', opacity: 0.6 }}>
+                                Ce bloc configure la planification ; l’exécution cron/queue globale est branchée côté panel.
+                            </p>
+                        </>
+                    )}
+                </section>
             )}
 
             {serverId && (
@@ -1005,6 +1278,69 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                         >
                                                             (épinglage ≠ dernière)
                                                         </span>
+                                                    ) : null}
+                                                    {!up?.error &&
+                                                    up?.update_available &&
+                                                    up.latest_version_id &&
+                                                    serverId ? (
+                                                        <button
+                                                            type="button"
+                                                            disabled={
+                                                                installHistoryLoading ||
+                                                                updateCheckBusy ||
+                                                                historyQuickUpdateRowId === h.id
+                                                            }
+                                                            onClick={() => void applyHistoryLatestUpdate(h)}
+                                                            style={{
+                                                                marginTop: '6px',
+                                                                padding: '2px 6px',
+                                                                fontSize: '0.6rem',
+                                                                borderRadius: '3px',
+                                                                border: '1px solid rgba(34,197,94,0.55)',
+                                                                background: 'rgba(34,197,94,0.15)',
+                                                                color: 'inherit',
+                                                                cursor:
+                                                                    installHistoryLoading ||
+                                                                    updateCheckBusy ||
+                                                                    historyQuickUpdateRowId === h.id
+                                                                        ? 'wait'
+                                                                        : 'pointer',
+                                                            }}
+                                                            title={
+                                                                pinRow
+                                                                    ? 'Installe la dernière version listée par l’API (l’épingle reste inchangée).'
+                                                                    : 'Réinstalle dans le même dossier que la dernière entrée.'
+                                                            }
+                                                        >
+                                                            {historyQuickUpdateRowId === h.id
+                                                                ? 'Mise à jour…'
+                                                                : 'Installer MAJ'}
+                                                        </button>
+                                                    ) : null}
+                                                    {typeof up?.latest_changelog === 'string' &&
+                                                    up.latest_changelog.trim() !== '' ? (
+                                                        <details
+                                                            style={{
+                                                                marginTop: '8px',
+                                                                fontSize: '0.6rem',
+                                                                opacity: 0.82,
+                                                                maxWidth: '220px',
+                                                            }}
+                                                        >
+                                                            <summary style={{ cursor: 'pointer', userSelect: 'none' }}>
+                                                                Notes / changelog (extrait)
+                                                            </summary>
+                                                            <div
+                                                                style={{
+                                                                    marginTop: '6px',
+                                                                    whiteSpace: 'pre-wrap',
+                                                                    wordBreak: 'break-word',
+                                                                    lineHeight: 1.35,
+                                                                }}
+                                                            >
+                                                                {up.latest_changelog}
+                                                            </div>
+                                                        </details>
                                                     ) : null}
                                                 </td>
                                                 <td style={{ padding: '5px 6px' }}>
@@ -1435,13 +1771,21 @@ export default function McPluginsDashboard(): React.ReactElement {
                                             <th style={{ textAlign: 'left', padding: '4px 6px' }}>Version</th>
                                             <th style={{ textAlign: 'left', padding: '4px 6px' }}>Fichier</th>
                                             <th style={{ textAlign: 'left', padding: '4px 6px' }}>Loaders</th>
+                                            <th style={{ textAlign: 'left', padding: '4px 6px' }}>Dép.</th>
                                             <th style={{ textAlign: 'left', padding: '4px 6px' }}>MC</th>
                                             <th style={{ textAlign: 'right', padding: '4px 6px' }}>DL</th>
                                             <th style={{ textAlign: 'right', padding: '4px 6px' }}>Action</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {detailVersions.map((vr) => (
+                                        {detailVersions.map((vr) => {
+                                            const mcCompat = mcCompatForVersion(
+                                                vr.game_versions || [],
+                                                minecraftVersionFilter,
+                                                serverCtx?.minecraft_versions_hint ?? []
+                                            );
+
+                                            return (
                                             <tr key={vr.id} style={{ borderBottom: '1px solid rgba(128,128,128,0.12)' }}>
                                                 <td style={{ padding: '6px', verticalAlign: 'top' }}>
                                                     <div>{vr.version_number || vr.name}</div>
@@ -1469,7 +1813,51 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                     {(vr.loaders || []).slice(0, 6).join(', ')}
                                                     {(vr.loaders || []).length > 6 ? '…' : ''}
                                                 </td>
+                                                <td style={{ padding: '6px', verticalAlign: 'top', maxWidth: '120px' }}>
+                                                    {(vr.dependencies || []).length === 0 ? (
+                                                        '—'
+                                                    ) : (
+                                                        <span title={(vr.dependencies || [])
+                                                            .map((d) => d.project_id || d.dependency_type || '')
+                                                            .filter(Boolean)
+                                                            .join(', ')}>
+                                                            {(vr.dependencies || []).slice(0, 5).map((d, idx) => (
+                                                                <span key={idx}>
+                                                                    {idx > 0 ? ', ' : ''}
+                                                                    <code style={{ fontSize: '0.62rem' }}>
+                                                                        {d.project_id ?? d.dependency_type ?? '—'}
+                                                                    </code>
+                                                                </span>
+                                                            ))}
+                                                            {(vr.dependencies || []).length > 5 ? '…' : ''}
+                                                        </span>
+                                                    )}
+                                                </td>
                                                 <td style={{ padding: '6px', verticalAlign: 'top', maxWidth: '140px' }}>
+                                                    {mcCompat === 'ok' ? (
+                                                        <span
+                                                            style={{
+                                                                color: '#86efac',
+                                                                fontSize: '0.58rem',
+                                                                display: 'block',
+                                                                marginBottom: '3px',
+                                                            }}
+                                                        >
+                                                            MC ✓
+                                                        </span>
+                                                    ) : mcCompat === 'warn' ? (
+                                                        <span
+                                                            style={{
+                                                                color: '#fb923c',
+                                                                fontSize: '0.58rem',
+                                                                display: 'block',
+                                                                marginBottom: '3px',
+                                                            }}
+                                                            title="Écart entre versions Minecraft déclarées, le filtre catalogue et les indications œuf"
+                                                        >
+                                                            MC ⚠
+                                                        </span>
+                                                    ) : null}
                                                     {(vr.game_versions || []).slice(-4).join(', ')}
                                                     {(vr.game_versions || []).length > 4 ? '…' : ''}
                                                 </td>
@@ -1512,7 +1900,8 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                     </button>
                                                 </td>
                                             </tr>
-                                        ))}
+                                            );
+                                        })}
                                     </tbody>
                                 </table>
                             </div>

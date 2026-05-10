@@ -17,8 +17,19 @@ use Illuminate\Support\Facades\Validator;
  * Closures uniquement (pas de contrôleurs dédiés) pour éviter BindingResolutionException
  * si l’autoload des classes d’extension Blueprint n’est pas résolu.
  */
+
+/*
+ * Aligné sur conf.yml info.version ; Blueprint doit remplacer la valeur au build.
+ * Si le placeholder {version} reste (dev / chargement direct), on force un UA stable :
+ * CurseForge / Cloudflare rejettent souvent un User-Agent avec des accolades ou ambigu.
+ */
+$pmcpExtensionVersion = '{version}';
+if (! is_string($pmcpExtensionVersion) || $pmcpExtensionVersion === '' || $pmcpExtensionVersion === '{version}') {
+    $pmcpExtensionVersion = '0.7.0-dev';
+}
+
 $modrinthBase = 'https://api.modrinth.com/v2';
-$modrinthUa = 'pteromcplugins/{version} (+https://blueprint.zip)';
+$modrinthUa = 'pteromcplugins/' . $pmcpExtensionVersion . ' (+https://blueprint.zip)';
 
 /** @var callable(string, array<string, mixed> = []): \Illuminate\Http\Client\Response $modrinthGet */
 $modrinthGet = static function (string $path, array $query = []) use ($modrinthBase, $modrinthUa) {
@@ -32,14 +43,46 @@ $modrinthGet = static function (string $path, array $query = []) use ($modrinthB
 
 $curseForgeBase = 'https://api.curseforge.com/v1';
 $curseForgeGameIdMc = 432;
-$curseForgeUa = 'pteromcplugins/{version} (+https://blueprint.zip) curseforge-proxy';
+$curseForgeUa = 'pteromcplugins/' . $pmcpExtensionVersion . ' (+https://blueprint.zip) curseforge-proxy';
+
+/** @var callable(string): ?string */
+$curseForgePickEnvRaw = static function (string $envKey): ?string {
+    $candidates = [
+        isset($_ENV[$envKey]) && is_string($_ENV[$envKey]) ? $_ENV[$envKey] : null,
+        isset($_SERVER[$envKey]) && is_string($_SERVER[$envKey]) ? $_SERVER[$envKey] : null,
+    ];
+    $fromGetenv = getenv($envKey);
+    if (is_string($fromGetenv) && $fromGetenv !== '') {
+        $candidates[] = $fromGetenv;
+    }
+    $fromEnv = env($envKey);
+    if (is_string($fromEnv) && $fromEnv !== '') {
+        $candidates[] = $fromEnv;
+    }
+
+    foreach ($candidates as $raw) {
+        if (! is_string($raw)) {
+            continue;
+        }
+        $t = trim($raw);
+        if ($t === '') {
+            continue;
+        }
+        /* Guillemets résiduels si .env copié à la main. */
+        $t = trim($t, " \t\n\r\0\x0B\"'");
+
+        return $t !== '' ? $t : null;
+    }
+
+    return null;
+};
 
 /** @var callable(): ?string $curseForgeApiKey */
-$curseForgeApiKey = static function (): ?string {
+$curseForgeApiKey = static function () use ($curseForgePickEnvRaw): ?string {
     foreach (['CURSEFORGE_API_KEY', 'CF_API_KEY'] as $envKey) {
-        $raw = env($envKey);
-        if (is_string($raw) && trim($raw) !== '') {
-            return trim($raw);
+        $v = $curseForgePickEnvRaw($envKey);
+        if ($v !== null) {
+            return $v;
         }
     }
 
@@ -74,7 +117,7 @@ $curseForgeGet = static function (string $path, array $query = []) use ($curseFo
 $curseForgeAuthFailureMessage = static function (\Illuminate\Http\Client\Response $r): ?string {
     $c = $r->status();
     if ($c === 401 || $c === 403) {
-        return 'CurseForge : clé API refusée ou révoquée (HTTP ' . $c . '). Vérifiez CURSEFORGE_API_KEY ou CF_API_KEY dans le .env du panel ; créez une clé API sur https://console.curseforge.com/';
+        return 'CurseForge : accès refusé par l’API (HTTP ' . $c . '). Vérifiez une clé créée sur https://console.curseforge.com/ dans le .env du panel (CURSEFORGE_API_KEY ou CF_API_KEY), sans guillemets ni espaces parasites ; après toute modification du .env exécutez `php artisan config:clear`. Si la clé est sure, un plafond de débit ou un filtrage IP (403 côté CDN) est aussi possible.';
     }
 
     return null;
@@ -148,6 +191,55 @@ $validMcVersionFilter = static function (string $raw): bool {
 
     return $v !== ''
         && (bool) preg_match('/^[A-Za-z0-9.+_\-]{1,48}$/', $v);
+};
+
+/** Résumé changelog / notes pour l’UI (vérif MAJ). */
+$pmcpTruncatePlain = static function (string $text, int $maxLen = 680): string {
+    $t = trim(preg_replace('/\s+/u', ' ', $text) ?? '');
+    if ($t === '') {
+        return '';
+    }
+    if (function_exists('mb_strlen') && function_exists('mb_substr') && mb_strlen($t) > $maxLen) {
+        return mb_substr($t, 0, $maxLen) . '…';
+    }
+
+    return strlen($t) > $maxLen ? substr($t, 0, $maxLen) . '…' : $t;
+};
+
+/**
+ * Blocage installation par identifiant projet amont (Modrinth / CurseForge).
+ * Variable panel optionnelle : PMCP_BLOCKLIST_PROJECT_IDS=id1,id2,modrinth:abc,curseforge:994854
+ * (préfixe provider pour lever toute ambiguïté si le même id existe sur les deux sources).
+ */
+$pmcpInstallBlockedByPolicy = static function (string $provider, string $projectId): bool {
+    $raw = env('PMCP_BLOCKLIST_PROJECT_IDS');
+    if (! is_string($raw)) {
+        return false;
+    }
+    $raw = trim($raw);
+    if ($raw === '') {
+        return false;
+    }
+
+    $prov = strtolower($provider);
+    $pid = strtolower(ltrim($projectId));
+
+    foreach (array_map('trim', explode(',', $raw)) as $token) {
+        if ($token === '') {
+            continue;
+        }
+        $t = strtolower($token);
+        if (str_contains($t, ':')) {
+            $parts = explode(':', $t, 2);
+            if (count($parts) === 2 && $parts[0] === $prov && $parts[1] === $pid) {
+                return true;
+            }
+        } elseif ($t === $pid) {
+            return true;
+        }
+    }
+
+    return false;
 };
 
 /** Choisit la version Modrinth la plus récente dans une liste /project/.../version. */
@@ -331,6 +423,86 @@ $normalizeInstallDirectory = static function (?string $raw): ?string {
     return $dir;
 };
 
+$validCronExpression = static function (string $expr): bool {
+    $e = trim($expr);
+    if ($e === '' || strlen($e) > 64) {
+        return false;
+    }
+
+    $parts = preg_split('/\s+/', $e, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    if (count($parts) !== 5) {
+        return false;
+    }
+
+    $fieldBounds = [
+        [0, 59], // minute
+        [0, 23], // heure
+        [1, 31], // day of month
+        [1, 12], // month
+        [0, 7],  // day of week (0 et 7 = dimanche selon implémentations courantes)
+    ];
+
+    foreach ($parts as $idx => $field) {
+        [$min, $max] = $fieldBounds[$idx];
+        $items = explode(',', $field);
+        if (count($items) === 0) {
+            return false;
+        }
+        foreach ($items as $item) {
+            $it = trim($item);
+            if ($it === '') {
+                return false;
+            }
+            if ($it === '*') {
+                continue;
+            }
+
+            $step = null;
+            if (str_contains($it, '/')) {
+                [$base, $stepRaw] = array_pad(explode('/', $it, 2), 2, '');
+                if (! ctype_digit($stepRaw) || (int) $stepRaw <= 0) {
+                    return false;
+                }
+                $step = (int) $stepRaw;
+                $it = $base;
+                if ($it === '') {
+                    return false;
+                }
+            }
+
+            if ($it === '*') {
+                continue;
+            }
+
+            if (str_contains($it, '-')) {
+                [$aRaw, $bRaw] = array_pad(explode('-', $it, 2), 2, '');
+                if (! ctype_digit($aRaw) || ! ctype_digit($bRaw)) {
+                    return false;
+                }
+                $a = (int) $aRaw;
+                $b = (int) $bRaw;
+                if ($a < $min || $b > $max || $a > $b) {
+                    return false;
+                }
+            } else {
+                if (! ctype_digit($it)) {
+                    return false;
+                }
+                $n = (int) $it;
+                if ($n < $min || $n > $max) {
+                    return false;
+                }
+            }
+
+            if ($step !== null && $step > ($max - $min + 1)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+};
+
 /**
  * Infère si le serveur Panel est plutôt un stack « plugins » (Paper, proxies) ou « mods » (Forge/Fabric dédié).
  *
@@ -468,7 +640,14 @@ $defaultInstallDirectory = static function (array $version, string $projectId, \
     return '/mods';
 };
 
-Route::post('/install/modrinth', static function (Request $request) use ($modrinthGet, $validProjectId, $resolveServer, $normalizeInstallDirectory, $defaultInstallDirectory): JsonResponse {
+Route::post('/install/modrinth', static function (Request $request) use (
+    $modrinthGet,
+    $pmcpInstallBlockedByPolicy,
+    $validProjectId,
+    $resolveServer,
+    $normalizeInstallDirectory,
+    $defaultInstallDirectory
+): JsonResponse {
     if (!class_exists(\Pterodactyl\Repositories\Wings\DaemonFileRepository::class)) {
         return response()->json(['message' => 'Classes Wings du panel introuvables (DaemonFileRepository).'], 500);
     }
@@ -517,6 +696,12 @@ Route::post('/install/modrinth', static function (Request $request) use ($modrin
 
     if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_CREATE, $server)) {
         return response()->json(['message' => 'Permission refusée : création de fichiers sur ce serveur.'], 403);
+    }
+
+    if ($pmcpInstallBlockedByPolicy('modrinth', $data['project_id'])) {
+        return response()->json([
+            'message' => 'Installation bloquée par la politique du panneau (variable PMCP_BLOCKLIST_PROJECT_IDS).',
+        ], 403);
     }
 
     try {
@@ -646,6 +831,7 @@ Route::post('/install/curseforge', static function (Request $request) use (
     $curseForgeGet,
     $defaultInstallDirectoryCurseForge,
     $normalizeInstallDirectory,
+    $pmcpInstallBlockedByPolicy,
     $resolveServer
 ): JsonResponse {
     if ($curseForgeApiKey() === null) {
@@ -701,6 +887,12 @@ Route::post('/install/curseforge', static function (Request $request) use (
 
     if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_CREATE, $server)) {
         return response()->json(['message' => 'Permission refusée : création de fichiers sur ce serveur.'], 403);
+    }
+
+    if ($pmcpInstallBlockedByPolicy('curseforge', (string) $modId)) {
+        return response()->json([
+            'message' => 'Installation bloquée par la politique du panneau (variable PMCP_BLOCKLIST_PROJECT_IDS).',
+        ], 403);
     }
 
     try {
@@ -1000,6 +1192,158 @@ Route::get('/server/context', static function (Request $request) use ($resolveSe
     ]);
 });
 
+Route::get('/schedule', static function (Request $request) use ($resolveServer): JsonResponse {
+    $validator = Validator::make($request->query(), [
+        'server' => ['required', 'string', 'max:64'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+
+    $data = $validator->validated();
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $server = $resolveServer($data['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+
+    $server->loadMissing('subusers');
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_READ, $server)) {
+        return response()->json(['message' => 'Permission refusée.'], 403);
+    }
+
+    if (! Schema::hasTable('pmcp_server_schedules')) {
+        return response()->json([
+            'scheduled_enabled' => false,
+            'backup_before_update' => true,
+            'cron_expression' => '0 4 * * 1',
+            'max_updates_per_run' => 5,
+            'migration_pending' => true,
+        ]);
+    }
+
+    $row = DB::table('pmcp_server_schedules')->where('server_id', $server->id)->first([
+        'scheduled_enabled',
+        'backup_before_update',
+        'cron_expression',
+        'max_updates_per_run',
+        'last_preview_at',
+        'updated_at',
+    ]);
+
+    if (! $row) {
+        return response()->json([
+            'scheduled_enabled' => false,
+            'backup_before_update' => true,
+            'cron_expression' => '0 4 * * 1',
+            'max_updates_per_run' => 5,
+            'migration_pending' => false,
+        ]);
+    }
+
+    return response()->json([
+        'scheduled_enabled' => (bool) $row->scheduled_enabled,
+        'backup_before_update' => (bool) $row->backup_before_update,
+        'cron_expression' => (string) $row->cron_expression,
+        'max_updates_per_run' => (int) $row->max_updates_per_run,
+        'last_preview_at' => $row->last_preview_at !== null ? (string) $row->last_preview_at : null,
+        'updated_at' => $row->updated_at !== null ? (string) $row->updated_at : null,
+        'migration_pending' => false,
+    ]);
+});
+
+Route::post('/schedule', static function (Request $request) use ($resolveServer, $validCronExpression): JsonResponse {
+    if (! Schema::hasTable('pmcp_server_schedules')) {
+        return response()->json(['message' => 'Migration base schedule non appliquée.'], 503);
+    }
+
+    $validator = Validator::make($request->all(), [
+        'server' => ['required', 'string', 'max:64'],
+        'scheduled_enabled' => ['sometimes', 'boolean'],
+        'backup_before_update' => ['sometimes', 'boolean'],
+        'cron_expression' => ['sometimes', 'string', 'max:64'],
+        'max_updates_per_run' => ['sometimes', 'integer', 'min:1', 'max:50'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+
+    $data = $validator->validated();
+    if (isset($data['cron_expression']) && ! $validCronExpression((string) $data['cron_expression'])) {
+        return response()->json(['message' => 'Expression cron invalide (format 5 champs attendu).'], 422);
+    }
+
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $server = $resolveServer($data['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+
+    $server->loadMissing('subusers');
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_CREATE, $server)) {
+        return response()->json(['message' => 'Permission refusée.'], 403);
+    }
+
+    $now = now();
+    $current = DB::table('pmcp_server_schedules')->where('server_id', $server->id)->first([
+        'scheduled_enabled',
+        'backup_before_update',
+        'cron_expression',
+        'max_updates_per_run',
+    ]);
+
+    $payload = [
+        'server_id' => $server->id,
+        'updated_by_user_id' => $user->id,
+        'scheduled_enabled' => isset($data['scheduled_enabled']) ? (bool) $data['scheduled_enabled'] : (bool) ($current->scheduled_enabled ?? false),
+        'backup_before_update' => isset($data['backup_before_update']) ? (bool) $data['backup_before_update'] : (bool) ($current->backup_before_update ?? true),
+        'cron_expression' => isset($data['cron_expression']) ? trim((string) $data['cron_expression']) : (string) ($current->cron_expression ?? '0 4 * * 1'),
+        'max_updates_per_run' => isset($data['max_updates_per_run']) ? (int) $data['max_updates_per_run'] : (int) ($current->max_updates_per_run ?? 5),
+        'updated_at' => $now,
+    ];
+
+    if ($current) {
+        DB::table('pmcp_server_schedules')->where('server_id', $server->id)->update($payload);
+    } else {
+        try {
+            $insertPayload = $payload;
+            $insertPayload['created_at'] = $now;
+            DB::table('pmcp_server_schedules')->insert($insertPayload);
+        } catch (\Throwable) {
+            /* Évite une 500 en cas de double soumission concurrente (contrainte unique server_id). */
+            DB::table('pmcp_server_schedules')->where('server_id', $server->id)->update($payload);
+        }
+    }
+
+    return response()->json([
+        'message' => 'Planification mise à jour.',
+        'scheduled_enabled' => (bool) $payload['scheduled_enabled'],
+        'backup_before_update' => (bool) $payload['backup_before_update'],
+        'cron_expression' => (string) $payload['cron_expression'],
+        'max_updates_per_run' => (int) $payload['max_updates_per_run'],
+    ]);
+});
+
 Route::get('/pins', static function (Request $request) use ($resolveServer): JsonResponse {
     if (! Schema::hasTable('pmcp_install_pins')) {
         return response()->json([
@@ -1200,6 +1544,7 @@ Route::post('/install/check-updates', static function (Request $request) use (
     $curseForgeGet,
     $modrinthGet,
     $modrinthLatestFromVersionList,
+    $pmcpTruncatePlain,
     $resolveServer,
     $validCurseForgeModId,
     $validProjectId
@@ -1277,6 +1622,7 @@ Route::post('/install/check-updates', static function (Request $request) use (
             'current_version_id' => $vid,
             'latest_version_id' => null,
             'latest_version_label' => null,
+            'latest_changelog' => null,
             'update_available' => false,
             'pin' => $pin,
             'error' => null,
@@ -1318,6 +1664,14 @@ Route::post('/install/check-updates', static function (Request $request) use (
                 if ($pin !== null && $lid !== '' && isset($pin['pinned_version_id']) && $lid !== $pin['pinned_version_id']) {
                     /* On signale encore une mise à jour « officielle », le client peut afficher l’épingle. */
                     $row['pinned_differs_from_latest'] = true;
+                }
+
+                $chg = isset($latest['changelog']) && is_string($latest['changelog'])
+                    ? $pmcpTruncatePlain($latest['changelog'], 680)
+                    : '';
+
+                if ($chg !== '') {
+                    $row['latest_changelog'] = $chg;
                 }
 
             } else {
@@ -1404,6 +1758,14 @@ Route::post('/install/check-updates', static function (Request $request) use (
 
                 if ($pin !== null && $lid !== '' && isset($pin['pinned_version_id']) && $lid !== $pin['pinned_version_id']) {
                     $row['pinned_differs_from_latest'] = true;
+                }
+
+                $chCf = isset($best['changelogHtml']) && is_string($best['changelogHtml'])
+                    ? $pmcpTruncatePlain(strip_tags($best['changelogHtml']), 680)
+                    : '';
+
+                if ($chCf !== '') {
+                    $row['latest_changelog'] = $chCf;
                 }
             }
 
