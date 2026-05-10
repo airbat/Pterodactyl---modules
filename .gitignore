@@ -32,3 +32,6 @@ Thumbs.db
 
 # Project-specific
 /local-test-panel/
+
+# graphify
+graphify-out/
