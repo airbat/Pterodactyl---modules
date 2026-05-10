@@ -229,10 +229,19 @@
       "norm_label": "dedupehistorynewestfirst()"
     },
     {
-      "label": "jsonDelete()",
+      "label": "dedupeHistoryByTargetNewestFirst()",
       "file_type": "code",
       "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
       "source_location": "L403",
+      "id": "mcpluginsdashboard_dedupehistorybytargetnewestfirst",
+      "community": 0,
+      "norm_label": "dedupehistorybytargetnewestfirst()"
+    },
+    {
+      "label": "jsonDelete()",
+      "file_type": "code",
+      "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
+      "source_location": "L418",
       "id": "mcpluginsdashboard_jsondelete",
       "community": 1,
       "norm_label": "jsondelete()"
@@ -241,7 +250,7 @@
       "label": "onSubmit()",
       "file_type": "code",
       "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
-      "source_location": "L991",
+      "source_location": "L1065",
       "id": "mcpluginsdashboard_onsubmit",
       "community": 0,
       "norm_label": "onsubmit()"
@@ -471,6 +480,18 @@
       "source_location": "L403",
       "weight": 1.0,
       "_src": "dashboard_components_sections_mcpluginsdashboard_tsx",
+      "_tgt": "mcpluginsdashboard_dedupehistorybytargetnewestfirst",
+      "source": "dashboard_components_sections_mcpluginsdashboard_tsx",
+      "target": "mcpluginsdashboard_dedupehistorybytargetnewestfirst",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
+      "source_location": "L418",
+      "weight": 1.0,
+      "_src": "dashboard_components_sections_mcpluginsdashboard_tsx",
       "_tgt": "mcpluginsdashboard_jsondelete",
       "source": "dashboard_components_sections_mcpluginsdashboard_tsx",
       "target": "mcpluginsdashboard_jsondelete",
@@ -480,7 +501,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
-      "source_location": "L991",
+      "source_location": "L1065",
       "weight": 1.0,
       "_src": "dashboard_components_sections_mcpluginsdashboard_tsx",
       "_tgt": "mcpluginsdashboard_onsubmit",
@@ -504,7 +525,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
-      "source_location": "L414",
+      "source_location": "L429",
       "weight": 1.0,
       "_src": "mcpluginsdashboard_jsondelete",
       "_tgt": "mcpluginsdashboard_csrfheaders",
@@ -528,7 +549,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
-      "source_location": "L404",
+      "source_location": "L419",
       "weight": 1.0,
       "_src": "mcpluginsdashboard_jsondelete",
       "_tgt": "mcpluginsdashboard_ensuresanctumcsrfcookie",
@@ -546,6 +567,18 @@
       "_tgt": "mcpluginsdashboard_pinlookupkey",
       "source": "mcpluginsdashboard_pinlookupkey",
       "target": "mcpluginsdashboard_dedupehistorynewestfirst",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "ext/dashboard/components/sections/McPluginsDashboard.tsx",
+      "source_location": "L409",
+      "weight": 1.0,
+      "_src": "mcpluginsdashboard_dedupehistorybytargetnewestfirst",
+      "_tgt": "mcpluginsdashboard_pinlookupkey",
+      "source": "mcpluginsdashboard_pinlookupkey",
+      "target": "mcpluginsdashboard_dedupehistorybytargetnewestfirst",
       "confidence_score": 1.0
     }
   ],

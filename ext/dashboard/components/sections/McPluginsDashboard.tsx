@@ -400,6 +400,21 @@ function dedupeHistoryNewestFirst(items: InstallHistoryItem[]): InstallHistoryIt
 
 }
 
+function dedupeHistoryByTargetNewestFirst(items: InstallHistoryItem[]): InstallHistoryItem[] {
+    const seen = new Set<string>();
+    const out: InstallHistoryItem[] = [];
+
+    for (const it of items) {
+        const dir = (it.directory || '').trim().toLowerCase();
+        const k = `${pinLookupKey(it.provider, it.project_id)}:${dir}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push(it);
+    }
+
+    return out;
+}
+
 async function jsonDelete(url: string): Promise<void> {
     await ensureSanctumCsrfCookie();
 
@@ -487,6 +502,8 @@ export default function McPluginsDashboard(): React.ReactElement {
     const [scheduleSaveOk, setScheduleSaveOk] = useState<string | null>(null);
     const [schedulePreviewBusy, setSchedulePreviewBusy] = useState(false);
     const [schedulePreview, setSchedulePreview] = useState<SchedulePreviewApiResponse | null>(null);
+    const [scheduleRunBusy, setScheduleRunBusy] = useState(false);
+    const [scheduleRunReport, setScheduleRunReport] = useState<string | null>(null);
 
     const pinnedForSelectedProject = useMemo((): PinApiItem | undefined => {
         if (!selectedProjectId) return undefined;
@@ -572,6 +589,37 @@ export default function McPluginsDashboard(): React.ReactElement {
         }
     }, [serverId, loadPins, runUpdateCheck]);
 
+    const installHistoryVersion = useCallback(
+        async (h: InstallHistoryItem, versionId: string): Promise<void> => {
+            if (!serverId) return;
+            if (h.provider === 'modrinth') {
+                await postJson(`${EXT_BASE}/install/modrinth`, {
+                    server: serverId,
+                    project_id: h.project_id,
+                    version_id: versionId,
+                    directory: h.directory,
+                });
+                return;
+            }
+            if (h.provider === 'curseforge') {
+                const mid = Number.parseInt(h.project_id, 10);
+                const fid = Number.parseInt(versionId, 10);
+                if (Number.isNaN(mid) || Number.isNaN(fid)) {
+                    throw new Error('Identifiants CurseForge invalides.');
+                }
+                await postJson(`${EXT_BASE}/install/curseforge`, {
+                    server: serverId,
+                    mod_id: mid,
+                    file_id: fid,
+                    directory: h.directory,
+                });
+                return;
+            }
+            throw new Error('Provider non supporté pour installation.');
+        },
+        [serverId]
+    );
+
     const applyHistoryLatestUpdate = useCallback(
         async (h: InstallHistoryItem): Promise<void> => {
             if (!serverId) return;
@@ -584,29 +632,7 @@ export default function McPluginsDashboard(): React.ReactElement {
             setHistoryQuickUpdateRowId(h.id);
 
             try {
-                if (h.provider === 'modrinth') {
-                    await postJson(`${EXT_BASE}/install/modrinth`, {
-                        server: serverId,
-                        project_id: h.project_id,
-                        version_id: lid,
-                        directory: h.directory,
-                    });
-                } else if (h.provider === 'curseforge') {
-                    const mid = Number.parseInt(h.project_id, 10);
-                    const fid = Number.parseInt(lid, 10);
-                    if (Number.isNaN(mid) || Number.isNaN(fid)) {
-                        alert('Identifiants CurseForge invalides pour cette mise à jour.');
-                        return;
-                    }
-                    await postJson(`${EXT_BASE}/install/curseforge`, {
-                        server: serverId,
-                        mod_id: mid,
-                        file_id: fid,
-                        directory: h.directory,
-                    });
-                } else {
-                    return;
-                }
+                await installHistoryVersion(h, lid);
 
                 await loadInstallHistory();
             } catch (e: unknown) {
@@ -619,7 +645,7 @@ export default function McPluginsDashboard(): React.ReactElement {
 
         },
 
-        [serverId, updateStatusByKey, loadInstallHistory]
+        [serverId, updateStatusByKey, loadInstallHistory, installHistoryVersion]
 
     );
 
@@ -628,29 +654,7 @@ export default function McPluginsDashboard(): React.ReactElement {
             if (!serverId) return;
             setHistoryRollbackRowId(h.id);
             try {
-                if (h.provider === 'modrinth') {
-                    await postJson(`${EXT_BASE}/install/modrinth`, {
-                        server: serverId,
-                        project_id: h.project_id,
-                        version_id: h.version_id,
-                        directory: h.directory,
-                    });
-                } else if (h.provider === 'curseforge') {
-                    const mid = Number.parseInt(h.project_id, 10);
-                    const fid = Number.parseInt(h.version_id, 10);
-                    if (Number.isNaN(mid) || Number.isNaN(fid)) {
-                        alert('Rollback CurseForge impossible : identifiants invalides dans l’historique.');
-                        return;
-                    }
-                    await postJson(`${EXT_BASE}/install/curseforge`, {
-                        server: serverId,
-                        mod_id: mid,
-                        file_id: fid,
-                        directory: h.directory,
-                    });
-                } else {
-                    return;
-                }
+                await installHistoryVersion(h, h.version_id);
                 await loadInstallHistory();
             } catch (e: unknown) {
                 alert(e instanceof Error ? e.message : 'Rollback impossible');
@@ -658,7 +662,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                 setHistoryRollbackRowId(null);
             }
         },
-        [serverId, loadInstallHistory]
+        [serverId, loadInstallHistory, installHistoryVersion]
     );
 
     const saveScheduleConfig = useCallback(async (): Promise<void> => {
@@ -708,6 +712,75 @@ export default function McPluginsDashboard(): React.ReactElement {
         }
     }, [serverId]);
 
+    const runScheduledPassNow = useCallback(async (): Promise<void> => {
+        if (!serverId || !scheduleCfg) return;
+        setScheduleRunBusy(true);
+        setScheduleRunReport(null);
+        setScheduleErr(null);
+        try {
+            const historyData = await fetchJson<InstallHistoryApiResponse>(
+                `${EXT_BASE}/install/history?${new URLSearchParams({ server: serverId, limit: '50' }).toString()}`
+            );
+            const historySlice = dedupeHistoryByTargetNewestFirst(historyData.items).slice(0, 50);
+            if (historySlice.length === 0) {
+                setScheduleRunReport('Aucune entrée historique à traiter.');
+                return;
+            }
+
+            const maxRun = Math.max(1, Math.min(50, Number(scheduleCfg.max_updates_per_run || 5)));
+            const freshMap: Record<string, UpdateCheckItem> = {};
+            const candidatePairs: Array<{ h: InstallHistoryItem; latestVersionId: string }> = [];
+            for (let i = 0; i < historySlice.length; i += 25) {
+                const chunk = historySlice.slice(i, i + 25);
+                const d = await postJson<UpdatesCheckApiResponse>(`${EXT_BASE}/install/check-updates`, {
+                    server: serverId,
+                    entries: chunk.map((h) => ({
+                        provider: h.provider,
+                        project_id: h.project_id,
+                        version_id: h.version_id,
+                    })),
+                });
+                for (const row of d.items ?? []) {
+                    freshMap[pinLookupKey(row.provider, row.project_id)] = row;
+                }
+                for (const h of chunk) {
+                    const up = freshMap[pinLookupKey(h.provider, h.project_id)];
+                    if (!up || up.error || !up.update_available || !up.latest_version_id) continue;
+                    if (up.pin && up.pin.pinned_version_id) continue;
+                    candidatePairs.push({ h, latestVersionId: up.latest_version_id });
+                }
+            }
+            setUpdateStatusByKey(freshMap);
+            const candidates = candidatePairs.slice(0, maxRun);
+
+            let ok = 0;
+            let ko = 0;
+            const failures: string[] = [];
+            for (const c of candidates) {
+                try {
+                    await installHistoryVersion(c.h, c.latestVersionId);
+                    ok += 1;
+                } catch (e: unknown) {
+                    ko += 1;
+                    failures.push(
+                        `${c.h.provider}:${c.h.project_id} → ${e instanceof Error ? e.message : 'erreur'}`
+                    );
+                }
+            }
+
+            await loadInstallHistory();
+            const skipped = historySlice.length - candidates.length;
+            setScheduleRunReport(
+                `Passe manuelle terminée : ${ok} succès, ${ko} échec(s), ${skipped} ignoré(s) (pins / pas de MAJ).` +
+                    (failures.length > 0 ? ` Détails: ${failures.slice(0, 3).join(' | ')}` : '')
+            );
+        } catch (e: unknown) {
+            setScheduleErr(e instanceof Error ? e.message : 'Passe planifiée manuelle impossible');
+        } finally {
+            setScheduleRunBusy(false);
+        }
+    }, [serverId, scheduleCfg, installHistoryVersion, loadInstallHistory]);
+
     useEffect(() => {
         let cancel = false;
         if (!serverId) {
@@ -731,6 +804,7 @@ export default function McPluginsDashboard(): React.ReactElement {
             setScheduleErr(null);
             setScheduleSaveOk(null);
             setSchedulePreview(null);
+            setScheduleRunReport(null);
             return undefined;
         }
         loadInstallHistory().catch(() => {
@@ -1207,8 +1281,32 @@ export default function McPluginsDashboard(): React.ReactElement {
                                 >
                                     {schedulePreviewBusy ? 'Aperçu…' : 'Aperçu de passe'}
                                 </button>
+                                <button
+                                    type="button"
+                                    disabled={scheduleRunBusy || installHistoryLoading || updateCheckBusy}
+                                    onClick={() => void runScheduledPassNow()}
+                                    style={{
+                                        padding: '7px 12px',
+                                        borderRadius: '4px',
+                                        border: '1px solid rgba(34,197,94,0.55)',
+                                        background: 'rgba(34,197,94,0.18)',
+                                        color: 'inherit',
+                                        cursor:
+                                            scheduleRunBusy || installHistoryLoading || updateCheckBusy
+                                                ? 'wait'
+                                                : 'pointer',
+                                        fontSize: '0.74rem',
+                                    }}
+                                >
+                                    {scheduleRunBusy ? 'Exécution…' : 'Exécuter passe maintenant'}
+                                </button>
                             </div>
                             {scheduleSaveOk && <p style={{ fontSize: '0.75rem', color: '#86efac' }}>{scheduleSaveOk}</p>}
+                            {scheduleRunReport && (
+                                <p style={{ fontSize: '0.74rem', color: '#93c5fd', marginTop: '4px' }}>
+                                    {scheduleRunReport}
+                                </p>
+                            )}
                             {schedulePreview && (
                                 <div style={{ marginTop: '8px', fontSize: '0.72rem', opacity: 0.85 }}>
                                     <p style={{ marginBottom: '5px' }}>
@@ -1265,7 +1363,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                     >
                         <button
                             type="button"
-                            disabled={installHistory.length === 0 || updateCheckBusy || installHistoryLoading}
+                            disabled={installHistory.length === 0 || updateCheckBusy || installHistoryLoading || scheduleRunBusy}
                             onClick={() => {
 
                                 void runUpdateCheck(installHistory);
@@ -1375,6 +1473,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                             disabled={
                                                                 installHistoryLoading ||
                                                                 updateCheckBusy ||
+                                                                scheduleRunBusy ||
                                                                 historyRollbackRowId === h.id
                                                             }
                                                             onClick={() => void rollbackFromHistory(h)}
@@ -1435,6 +1534,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                             disabled={
                                                                 installHistoryLoading ||
                                                                 updateCheckBusy ||
+                                                                scheduleRunBusy ||
                                                                 historyQuickUpdateRowId === h.id
                                                             }
                                                             onClick={() => void applyHistoryLatestUpdate(h)}
@@ -1449,6 +1549,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                                 cursor:
                                                                     installHistoryLoading ||
                                                                     updateCheckBusy ||
+                                                                scheduleRunBusy ||
                                                                     historyQuickUpdateRowId === h.id
                                                                         ? 'wait'
                                                                         : 'pointer',
@@ -1502,7 +1603,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                             </code>
                                                             <button
                                                                 type="button"
-                                                                disabled={pinsMigrationPending || installHistoryLoading}
+                                                                disabled={pinsMigrationPending || installHistoryLoading || scheduleRunBusy}
                                                                 style={{
                                                                     ...pinSmallBtn,
                                                                     borderColor: 'rgba(248,113,113,0.5)',
@@ -1530,7 +1631,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                     ) : (
                                                         <button
                                                             type="button"
-                                                            disabled={pinsMigrationPending || installHistoryLoading}
+                                                            disabled={pinsMigrationPending || installHistoryLoading || scheduleRunBusy}
                                                             style={pinSmallBtn}
                                                             title="Mémoriser cette version pour ce projet"
                                                             onClick={() =>
