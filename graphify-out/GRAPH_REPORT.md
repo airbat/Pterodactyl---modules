@@ -1,7 +1,7 @@
 # Graph Report - Pterodactyl - modules  (2026-05-10)
 
 ## Corpus Check
-- 7 files · ~35,456 words
+- 7 files · ~35,647 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary

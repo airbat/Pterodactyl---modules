@@ -463,6 +463,7 @@ export default function McPluginsDashboard(): React.ReactElement {
     const [updatesErr, setUpdatesErr] = useState<string | null>(null);
     /** Ligne historique dont la mise à jour rapide (« Installer MAJ ») est en cours */
     const [historyQuickUpdateRowId, setHistoryQuickUpdateRowId] = useState<number | null>(null);
+    const [historyRollbackRowId, setHistoryRollbackRowId] = useState<number | null>(null);
     const [scheduleCfg, setScheduleCfg] = useState<ScheduleApiPayload | null>(null);
     const [scheduleErr, setScheduleErr] = useState<string | null>(null);
     const [scheduleSaveBusy, setScheduleSaveBusy] = useState(false);
@@ -603,6 +604,44 @@ export default function McPluginsDashboard(): React.ReactElement {
 
     );
 
+    const rollbackFromHistory = useCallback(
+        async (h: InstallHistoryItem): Promise<void> => {
+            if (!serverId) return;
+            setHistoryRollbackRowId(h.id);
+            try {
+                if (h.provider === 'modrinth') {
+                    await postJson(`${EXT_BASE}/install/modrinth`, {
+                        server: serverId,
+                        project_id: h.project_id,
+                        version_id: h.version_id,
+                        directory: h.directory,
+                    });
+                } else if (h.provider === 'curseforge') {
+                    const mid = Number.parseInt(h.project_id, 10);
+                    const fid = Number.parseInt(h.version_id, 10);
+                    if (Number.isNaN(mid) || Number.isNaN(fid)) {
+                        alert('Rollback CurseForge impossible : identifiants invalides dans l’historique.');
+                        return;
+                    }
+                    await postJson(`${EXT_BASE}/install/curseforge`, {
+                        server: serverId,
+                        mod_id: mid,
+                        file_id: fid,
+                        directory: h.directory,
+                    });
+                } else {
+                    return;
+                }
+                await loadInstallHistory();
+            } catch (e: unknown) {
+                alert(e instanceof Error ? e.message : 'Rollback impossible');
+            } finally {
+                setHistoryRollbackRowId(null);
+            }
+        },
+        [serverId, loadInstallHistory]
+    );
+
     const saveScheduleConfig = useCallback(async (): Promise<void> => {
         if (!serverId || !scheduleCfg) return;
         setScheduleSaveBusy(true);
@@ -647,6 +686,7 @@ export default function McPluginsDashboard(): React.ReactElement {
 
             setMinecraftVersionFilter('');
             setHistoryQuickUpdateRowId(null);
+            setHistoryRollbackRowId(null);
             setScheduleCfg(null);
             setScheduleErr(null);
             setScheduleSaveOk(null);
@@ -1252,6 +1292,36 @@ export default function McPluginsDashboard(): React.ReactElement {
                                                 </td>
                                                 <td style={{ padding: '5px 6px', maxWidth: '160px', wordBreak: 'break-word' }}>
                                                     {h.version_label || <code>{h.version_id}</code>}
+                                                    {serverId ? (
+                                                        <button
+                                                            type="button"
+                                                            disabled={
+                                                                installHistoryLoading ||
+                                                                updateCheckBusy ||
+                                                                historyRollbackRowId === h.id
+                                                            }
+                                                            onClick={() => void rollbackFromHistory(h)}
+                                                            style={{
+                                                                marginTop: '6px',
+                                                                display: 'block',
+                                                                padding: '2px 6px',
+                                                                fontSize: '0.6rem',
+                                                                borderRadius: '3px',
+                                                                border: '1px solid rgba(251,191,36,0.55)',
+                                                                background: 'rgba(251,191,36,0.16)',
+                                                                color: 'inherit',
+                                                                cursor:
+                                                                    installHistoryLoading ||
+                                                                    updateCheckBusy ||
+                                                                    historyRollbackRowId === h.id
+                                                                        ? 'wait'
+                                                                        : 'pointer',
+                                                            }}
+                                                            title="Réinstaller exactement cette version (rollback rapide)."
+                                                        >
+                                                            {historyRollbackRowId === h.id ? 'Rollback…' : 'Rollback'}
+                                                        </button>
+                                                    ) : null}
                                                 </td>
                                                 <td style={{ padding: '5px 6px', maxWidth: '180px', wordBreak: 'break-word', verticalAlign: 'top' }}>
                                                     {!up?.error && up?.update_available ? (

@@ -25,7 +25,7 @@ use Illuminate\Support\Facades\Validator;
  */
 $pmcpExtensionVersion = '{version}';
 if (! is_string($pmcpExtensionVersion) || $pmcpExtensionVersion === '' || $pmcpExtensionVersion === '{version}') {
-    $pmcpExtensionVersion = '0.7.0-dev';
+    $pmcpExtensionVersion = '0.7.1-dev';
 }
 
 $modrinthBase = 'https://api.modrinth.com/v2';
