@@ -99,6 +99,7 @@ type InstallModrinthResponse = {
     loaders: string[];
     restart_recommended: boolean;
     event_id?: number | null;
+    backup?: { id: number | null; archive: string | null } | null;
 };
 
 type InstallHistoryItem = {
@@ -129,6 +130,11 @@ type ServerContextPayload = {
 
     egg_name?: string | null;
     nest_name?: string | null;
+    /** Métadonnées panel (hints vides ou œufs atypiques) — facultatif tant que l’extension n’est pas à jour. */
+    context_meta?: {
+        bedrock_like_egg?: boolean;
+        startup_has_placeholders_left?: boolean;
+    };
 };
 
 type PinApiItem = {
@@ -173,6 +179,48 @@ type SchedulePreviewApiResponse = {
         directory: string;
         last_seen_at: string | null;
     }>;
+};
+
+type InstallBackupApiItem = {
+    id: number;
+    install_directory: string;
+    archive_relative_path: string;
+    context: string | null;
+    provider: string | null;
+    project_id: string | null;
+    version_id: string | null;
+    created_at: string | null;
+};
+
+type InstallBackupsApiResponse = {
+    items: InstallBackupApiItem[];
+    migration_pending?: boolean;
+};
+
+type WorkspaceListResponse = {
+    directory: string;
+    entries: unknown[];
+};
+
+type PresetApiItem = {
+    id: number;
+    owner_user_id: number;
+    name: string;
+    description: string | null;
+    items: Array<{ provider?: string; project_id?: string; version_id?: string; directory?: string | null }>;
+    updated_at: string | null;
+};
+
+type PresetsListResponse = {
+    items: PresetApiItem[];
+    migration_pending?: boolean;
+};
+
+type PresetApplyApiResponse = {
+    message?: string;
+    installed: number;
+    total: number;
+    errors: string[];
 };
 
 type UpdateCheckItem = {
@@ -380,6 +428,39 @@ async function postJson<T>(url: string, body: Record<string, unknown>): Promise<
     return (parsed ?? {}) as T;
 }
 
+async function putJson<T>(url: string, body: Record<string, unknown>): Promise<T> {
+    await ensureSanctumCsrfCookie();
+
+    const res = await fetch(url, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            ...csrfHeaders(),
+        },
+        body: JSON.stringify(body),
+    });
+    const text = await res.text().catch(() => '');
+    let parsed: unknown = null;
+    if (text) {
+        try {
+            parsed = JSON.parse(text) as unknown;
+        } catch {
+            parsed = null;
+        }
+    }
+    if (!res.ok) {
+        const message =
+            typeof parsed === 'object' && parsed !== null && 'message' in parsed
+                ? String((parsed as { message?: string }).message)
+                : text.slice(0, 200) || `HTTP ${res.status}`;
+        throw new Error(message);
+    }
+    return (parsed ?? {}) as T;
+}
+
 function pinLookupKey(provider: string, projectId: string): string {
     return `${provider}:${projectId}`;
 }
@@ -413,6 +494,73 @@ function dedupeHistoryByTargetNewestFirst(items: InstallHistoryItem[]): InstallH
     }
 
     return out;
+}
+
+function workspaceEntryBasename(ent: unknown): string {
+    const o = daemonListingAttributes(ent);
+    if (! o) {
+        return '?';
+    }
+    const n = typeof o.name === 'string' ? o.name : null;
+    const fn = typeof o.filename === 'string' ? o.filename : null;
+
+    const pick = n || fn || null;
+
+    return pick !== null && pick !== '' ? pick : '?';
+}
+
+function daemonListingAttributes(ent: unknown): Record<string, unknown> | null {
+    if (! ent || typeof ent !== 'object') {
+        return null;
+    }
+    const root = ent as Record<string, unknown>;
+    const a = root.attributes;
+    if (a !== undefined && typeof a === 'object' && a !== null && ! Array.isArray(a)) {
+        return a as Record<string, unknown>;
+    }
+
+    return root;
+}
+
+function workspaceEntryIsDirectory(ent: unknown): boolean {
+    if (! ent || typeof ent !== 'object') {
+        return false;
+    }
+    const outer = ent as Record<string, unknown>;
+    const topType = typeof outer.object === 'string' ? String(outer.object).toLowerCase() : '';
+    if (topType === 'directory') {
+        return true;
+    }
+    if (topType === 'file' || topType === 'symlink') {
+        return false;
+    }
+
+    const o = daemonListingAttributes(ent);
+    if (! o) {
+        return false;
+    }
+    const innerTyp = typeof o.object === 'string' ? String(o.object).toLowerCase() : '';
+    if (innerTyp === 'directory') {
+        return true;
+    }
+    if (innerTyp === 'file' || innerTyp === 'symlink') {
+        return false;
+    }
+    if (typeof o.directory === 'boolean') {
+        return o.directory;
+    }
+
+    const mimeRaw = typeof o.mime === 'string' ? o.mime : typeof o.mimetype === 'string' ? o.mimetype : '';
+
+    const m = mimeRaw.toLowerCase();
+
+    return m.includes('inode/directory');
+}
+
+function joinWorkspaceListedPath(directory: string, name: string): string {
+    const d = directory.replace(/\/*$/u, '');
+    const n = name.startsWith('/') ? name.slice(1) : name;
+    return `${d}/${n}`;
 }
 
 async function jsonDelete(url: string): Promise<void> {
@@ -474,6 +622,7 @@ export default function McPluginsDashboard(): React.ReactElement {
     const [versionsExhausted, setVersionsExhausted] = useState(false);
 
     const [installingVersionId, setInstallingVersionId] = useState<string | null>(null);
+    const [catalogBackupBefore, setCatalogBackupBefore] = useState(false);
     const [installOk, setInstallOk] = useState<string | null>(null);
     const [installErr, setInstallErr] = useState<string | null>(null);
 
@@ -504,6 +653,36 @@ export default function McPluginsDashboard(): React.ReactElement {
     const [schedulePreview, setSchedulePreview] = useState<SchedulePreviewApiResponse | null>(null);
     const [scheduleRunBusy, setScheduleRunBusy] = useState(false);
     const [scheduleRunReport, setScheduleRunReport] = useState<string | null>(null);
+
+    const [backupsRows, setBackupsRows] = useState<InstallBackupApiItem[]>([]);
+    const [backupsMigrationPending, setBackupsMigrationPending] = useState(false);
+    const [backupsErr, setBackupsErr] = useState<string | null>(null);
+    const [backupsBusy, setBackupsBusy] = useState(false);
+    const [restoreBusyId, setRestoreBusyId] = useState<number | null>(null);
+    const [restoreOkMsg, setRestoreOkMsg] = useState<string | null>(null);
+
+    const [wsDir, setWsDir] = useState<string>('/config');
+    const [wsPath, setWsPath] = useState<string>('/config/paper-global.yml');
+    const [wsContent, setWsContent] = useState('');
+    const [wsEntries, setWsEntries] = useState<unknown[]>([]);
+    const [wsListBusy, setWsListBusy] = useState(false);
+    const [wsFileBusy, setWsFileBusy] = useState(false);
+    const [wsSaveBusy, setWsSaveBusy] = useState(false);
+    const [wsErr, setWsErr] = useState<string | null>(null);
+    const [wsOk, setWsOk] = useState<string | null>(null);
+
+    const [presetRows, setPresetRows] = useState<PresetApiItem[]>([]);
+    const [presetMigrationPending, setPresetMigrationPending] = useState(false);
+    const [presetErr, setPresetErr] = useState<string | null>(null);
+    const [presetBusy, setPresetBusy] = useState(false);
+    const [presetFormName, setPresetFormName] = useState('');
+    const [presetFormDesc, setPresetFormDesc] = useState('');
+    const [presetFormItemsRaw, setPresetFormItemsRaw] = useState(
+        '[{"provider":"modrinth","project_id":"fabric-api","version_id":"REPLACE_VERSION_ID","directory":"/mods"}]'
+    );
+    const [presetApplyBusyId, setPresetApplyBusyId] = useState<number | null>(null);
+    const [presetBackupBeforeApply, setPresetBackupBeforeApply] = useState(true);
+    const [presetApplyMsg, setPresetApplyMsg] = useState<string | null>(null);
 
     const pinnedForSelectedProject = useMemo((): PinApiItem | undefined => {
         if (!selectedProjectId) return undefined;
@@ -590,14 +769,24 @@ export default function McPluginsDashboard(): React.ReactElement {
     }, [serverId, loadPins, runUpdateCheck]);
 
     const installHistoryVersion = useCallback(
-        async (h: InstallHistoryItem, versionId: string): Promise<void> => {
+        async (
+            h: InstallHistoryItem,
+            versionId: string,
+            opts?: { backup_before?: boolean; backup_context?: 'catalog' | 'history' | 'scheduled' }
+        ): Promise<void> => {
             if (!serverId) return;
+            const extras: Record<string, unknown> = {};
+            if (opts?.backup_before === true) {
+                extras.backup_before = true;
+                extras.backup_context = opts.backup_context ?? 'history';
+            }
             if (h.provider === 'modrinth') {
                 await postJson(`${EXT_BASE}/install/modrinth`, {
                     server: serverId,
                     project_id: h.project_id,
                     version_id: versionId,
                     directory: h.directory,
+                    ...extras,
                 });
                 return;
             }
@@ -612,6 +801,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                     mod_id: mid,
                     file_id: fid,
                     directory: h.directory,
+                    ...extras,
                 });
                 return;
             }
@@ -632,7 +822,10 @@ export default function McPluginsDashboard(): React.ReactElement {
             setHistoryQuickUpdateRowId(h.id);
 
             try {
-                await installHistoryVersion(h, lid);
+                await installHistoryVersion(h, lid, {
+                    backup_before: Boolean(scheduleCfg?.backup_before_update),
+                    backup_context: 'history',
+                });
 
                 await loadInstallHistory();
             } catch (e: unknown) {
@@ -645,7 +838,7 @@ export default function McPluginsDashboard(): React.ReactElement {
 
         },
 
-        [serverId, updateStatusByKey, loadInstallHistory, installHistoryVersion]
+        [serverId, updateStatusByKey, loadInstallHistory, installHistoryVersion, scheduleCfg]
 
     );
 
@@ -758,7 +951,10 @@ export default function McPluginsDashboard(): React.ReactElement {
             const failures: string[] = [];
             for (const c of candidates) {
                 try {
-                    await installHistoryVersion(c.h, c.latestVersionId);
+                    await installHistoryVersion(c.h, c.latestVersionId, {
+                        backup_before: Boolean(scheduleCfg.backup_before_update),
+                        backup_context: 'scheduled',
+                    });
                     ok += 1;
                 } catch (e: unknown) {
                     ko += 1;
@@ -780,6 +976,43 @@ export default function McPluginsDashboard(): React.ReactElement {
             setScheduleRunBusy(false);
         }
     }, [serverId, scheduleCfg, installHistoryVersion, loadInstallHistory]);
+
+    const reloadBackups = useCallback(async (): Promise<void> => {
+        if (! serverId) {
+            return;
+        }
+        setBackupsBusy(true);
+        setBackupsErr(null);
+        setRestoreOkMsg(null);
+        try {
+            const d = await fetchJson<InstallBackupsApiResponse>(
+                `${EXT_BASE}/install/backups?${new URLSearchParams({ server: serverId }).toString()}`
+            );
+            setBackupsRows(d.items ?? []);
+            setBackupsMigrationPending(Boolean(d.migration_pending));
+        } catch (e: unknown) {
+            setBackupsErr(e instanceof Error ? e.message : 'Sauvegardes indisponibles');
+            setBackupsRows([]);
+        } finally {
+            setBackupsBusy(false);
+        }
+    }, [serverId]);
+
+    const reloadPresets = useCallback(async (): Promise<void> => {
+        setPresetBusy(true);
+        setPresetErr(null);
+        setPresetApplyMsg(null);
+        try {
+            const d = await fetchJson<PresetsListResponse>(`${EXT_BASE}/presets`);
+            setPresetRows(d.items ?? []);
+            setPresetMigrationPending(Boolean(d.migration_pending));
+        } catch (e: unknown) {
+            setPresetErr(e instanceof Error ? e.message : 'Presets indisponibles');
+            setPresetRows([]);
+        } finally {
+            setPresetBusy(false);
+        }
+    }, []);
 
     useEffect(() => {
         let cancel = false;
@@ -805,6 +1038,24 @@ export default function McPluginsDashboard(): React.ReactElement {
             setScheduleSaveOk(null);
             setSchedulePreview(null);
             setScheduleRunReport(null);
+            setBackupsRows([]);
+            setBackupsMigrationPending(false);
+            setBackupsErr(null);
+            setBackupsBusy(false);
+            setRestoreBusyId(null);
+            setRestoreOkMsg(null);
+            setWsEntries([]);
+            setWsErr(null);
+            setWsOk(null);
+            setWsListBusy(false);
+            setWsFileBusy(false);
+            setWsSaveBusy(false);
+            setPresetRows([]);
+            setPresetMigrationPending(false);
+            setPresetErr(null);
+            setPresetBusy(false);
+            setPresetApplyBusyId(null);
+            setPresetApplyMsg(null);
             return undefined;
         }
         loadInstallHistory().catch(() => {
@@ -848,10 +1099,13 @@ export default function McPluginsDashboard(): React.ReactElement {
                 }
             });
 
+        void reloadBackups();
+        void reloadPresets();
+
         return () => {
             cancel = true;
         };
-    }, [serverId, loadInstallHistory]);
+    }, [serverId, loadInstallHistory, reloadBackups, reloadPresets]);
 
     useEffect(() => {
         let cancel = false;
@@ -1032,6 +1286,9 @@ export default function McPluginsDashboard(): React.ReactElement {
                         server: serverId,
                         project_id: selectedProjectId,
                         version_id: row.id,
+                        ...(catalogBackupBefore
+                            ? { backup_before: true, backup_context: 'catalog' as const }
+                            : {}),
                     });
                 } else {
                     const mid = Number.parseInt(selectedProjectId, 10);
@@ -1044,13 +1301,20 @@ export default function McPluginsDashboard(): React.ReactElement {
                         server: serverId,
                         mod_id: mid,
                         file_id: fid,
+                        ...(catalogBackupBefore
+                            ? { backup_before: true, backup_context: 'catalog' as const }
+                            : {}),
                     });
                 }
                 const fn = out.filename ? ` — fichier ${out.filename}` : '';
                 const ev =
                     out.event_id != null ? ` — journal #${String(out.event_id)}` : '';
+                const backupPart =
+                    out.backup?.archive != null && out.backup.archive !== ''
+                        ? ` — archive sauvegardée ${out.backup.archive}${out.backup.id != null ? ` (#${String(out.backup.id)})` : ''}`
+                        : '';
                 setInstallOk(
-                    `${out.message} (${out.directory}${fn})${ev}. Redémarrage recommandé : ${out.restart_recommended ? 'oui' : 'non'}.`
+                    `${out.message} (${out.directory}${fn})${ev}${backupPart}. Redémarrage recommandé : ${out.restart_recommended ? 'oui' : 'non'}.`
                 );
                 void loadInstallHistory();
             } catch (e: unknown) {
@@ -1059,7 +1323,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                 setInstallingVersionId(null);
             }
         },
-        [catalogProvider, selectedProjectId, serverId, loadInstallHistory, minecraftVersionFilter, serverCtx]
+        [catalogBackupBefore, catalogProvider, selectedProjectId, serverId, loadInstallHistory, minecraftVersionFilter, serverCtx]
     );
 
     const onSubmit = (e: React.FormEvent): void => {
@@ -1150,12 +1414,31 @@ export default function McPluginsDashboard(): React.ReactElement {
                         </div>
 
                     ) : (
-                        <p style={{ opacity: 0.75 }}>
-
-                            Aucune version Minecraft détectée automatiquement (variables d&apos;œuf ou startup vide).
-                            Vous pouvez filtrer manuellement ci-dessous.
-
-                        </p>
+                        <div style={{ opacity: 0.75 }}>
+                            <p style={{ marginBottom: '0.35rem' }}>
+                                {serverCtx.context_meta?.bedrock_like_egg ? (
+                                    <>
+                                        Aucune version semver lisible automatiquement. Sur Bedrock, un canal type{' '}
+                                        <code>latest</code> est fréquent ; le catalogue Java ci-dessous reste facultatif.
+                                    </>
+                                ) : (
+                                    <>
+                                        Aucune version Minecraft détectée automatiquement (variables d&apos;œuf, startup
+                                        développé ou scripts sans motif reconnu pour en extraire une version).
+                                    </>
+                                )}
+                            </p>
+                            {serverCtx.context_meta?.startup_has_placeholders_left ? (
+                                <p style={{ marginBottom: '0.35rem', fontSize: '0.69rem', opacity: 0.88 }}>
+                                    Le startup contient encore des placeholders <code>&#123;&#123; … &#125;&#125;</code> non
+                                    remplacés (valeurs d&apos;environnement vides ou absentes dans le payload). Une
+                                    visite&nbsp;/ enregistrement sur la page Startup du serveur corrige souvent le cas.
+                                </p>
+                            ) : null}
+                            <p style={{ marginBottom: 0 }}>
+                                Vous pouvez filtrer manuellement ci-dessous.
+                            </p>
+                        </div>
 
                     )}
                 </div>
@@ -1209,7 +1492,8 @@ export default function McPluginsDashboard(): React.ReactElement {
                                             )
                                         }
                                     />
-                                    Backup avant update (flag config)
+                                    Sauvegarder le dossier cible (compress Wings) avant chaque MAJ lors des passes
+                                    déclenchées ci-dessous
                                 </label>
                             </div>
                             <div style={{ ...inputBar, marginBottom: '8px' }}>
@@ -1334,6 +1618,615 @@ export default function McPluginsDashboard(): React.ReactElement {
                     )}
                 </section>
             )}
+
+            {serverId && (
+                <section
+                    style={{
+                        borderRadius: '6px',
+                        border: '1px solid rgba(128,128,128,0.25)',
+                        padding: '1rem',
+                        marginBottom: '1rem',
+                        background: 'rgba(0,0,0,0.1)',
+                    }}
+                >
+                    <h3 style={{ fontSize: '0.875rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                        Sauvegardes compressées (avant installs)
+                    </h3>
+                    <p style={{ fontSize: '0.74rem', opacity: 0.78, marginBottom: '0.65rem', lineHeight: 1.5 }}>
+                        Archives créées lors des installations lorsque vous cochez la sauvegarde.{' '}
+                        <strong>Restaurer</strong> décompresses l’archive sur le serveur via Wings&nbsp;; opération destructive
+                        potentielle&nbsp;: redémarrage souvent indispensable.
+                    </p>
+                    {backupsMigrationPending && (
+                        <p style={{ fontSize: '0.75rem', color: '#fbbf24', marginBottom: '0.5rem' }}>
+                            Migration <code>pmcp_backups</code> absente&nbsp;: exécutez <code>php artisan migrate</code>.
+                        </p>
+                    )}
+                    {backupsErr && <p style={{ fontSize: '0.75rem', color: '#fb923c' }}>{backupsErr}</p>}
+                    {restoreOkMsg && <p style={{ fontSize: '0.74rem', color: '#93c5fd' }}>{restoreOkMsg}</p>}
+                    <div style={{ ...inputBar, marginBottom: '8px' }}>
+                        <button
+                            type="button"
+                            disabled={backupsBusy}
+                            onClick={() => void reloadBackups()}
+                            style={{
+                                padding: '6px 12px',
+                                borderRadius: '4px',
+                                border: '1px solid rgba(82,169,255,0.55)',
+                                background: 'rgba(82,169,255,0.18)',
+                                color: 'inherit',
+                                cursor: backupsBusy ? 'wait' : 'pointer',
+                                fontSize: '0.74rem',
+                            }}
+                        >
+                            {backupsBusy ? 'Chargement…' : 'Rafraîchir la liste'}
+                        </button>
+                    </div>
+                    {backupsRows.length === 0 && !backupsBusy ? (
+                        <p style={{ fontSize: '0.75rem', opacity: 0.65 }}>Aucune entrée encore (ou aucune sauvegarde demandée).</p>
+                    ) : (
+                        <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '0.74rem', lineHeight: 1.5 }}>
+                            {backupsRows.map((b) => (
+                                <li key={b.id} style={{ marginBottom: '6px' }}>
+                                    <strong>#{String(b.id)}</strong>{' '}
+                                    <code style={{ opacity: 0.9 }}>{b.archive_relative_path}</code>
+                                    {' — '}
+                                    <span style={{ opacity: 0.82 }}>{b.context ?? '—'}</span>
+                                    {' — '}
+                                    <code>{b.install_directory}</code>
+                                    {b.created_at ? (
+                                        <>
+                                            {' '}
+                                            <span style={{ opacity: 0.55 }}>{b.created_at}</span>
+                                        </>
+                                    ) : null}
+                                    {' '}
+                                    <button
+                                        type="button"
+                                        disabled={restoreBusyId !== null || backupsBusy}
+                                        onClick={() => {
+                                            if (
+                                                typeof window !== 'undefined' &&
+                                                ! window.confirm(
+                                                    'Fusionner cette archive sur le dossier serveur peut écraser des fichiers. Continuer ?'
+                                                )
+                                            ) {
+                                                return;
+                                            }
+                                            void (async (): Promise<void> => {
+                                                if (!serverId) return;
+                                                setRestoreBusyId(b.id);
+                                                setRestoreOkMsg(null);
+                                                setBackupsErr(null);
+                                                try {
+                                                    await postJson(`${EXT_BASE}/install/backups/restore`, {
+                                                        server: serverId,
+                                                        backup_id: b.id,
+                                                    });
+                                                    setRestoreOkMsg(`Restauration envoyée (#${String(b.id)}). Vérifiez les fichiers puis redémarrez.`);
+                                                    await reloadBackups();
+                                                } catch (e: unknown) {
+                                                    setBackupsErr(e instanceof Error ? e.message : 'Restauration refusée');
+                                                } finally {
+                                                    setRestoreBusyId(null);
+                                                }
+                                            })();
+                                        }}
+                                        style={{
+                                            marginLeft: '6px',
+                                            padding: '2px 9px',
+                                            borderRadius: '4px',
+                                            border: '1px solid rgba(248,113,113,0.55)',
+                                            background: 'rgba(248,113,113,0.12)',
+                                            fontSize: '0.69rem',
+                                            cursor: restoreBusyId !== null ? 'wait' : 'pointer',
+                                            color: 'inherit',
+                                        }}
+                                    >
+                                        Restaurer
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </section>
+            )}
+
+            {serverId && (
+                <section
+                    style={{
+                        borderRadius: '6px',
+                        border: '1px solid rgba(128,128,128,0.25)',
+                        padding: '1rem',
+                        marginBottom: '1rem',
+                        background: 'rgba(0,0,0,0.1)',
+                    }}
+                >
+                    <h3 style={{ fontSize: '0.875rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                        Fichiers (workspace contrôlé)
+                    </h3>
+                    <p style={{ fontSize: '0.74rem', opacity: 0.78, marginBottom: '0.65rem', lineHeight: 1.5 }}>
+                        Lecture / écriture sur <code>/config</code>, <code>/plugins</code> ou <code>/mods</code> uniquement&nbsp;;
+                        suffixes YAML, TOML, JSON, PROPERTIES, CONF, TXT ou MC* autorisés. Le listing dépend du format renvoyé
+                        par Wings.
+                    </p>
+                    {(wsErr || wsOk) && (
+                        <p style={{ fontSize: '0.74rem', color: wsOk ? '#86efac' : '#fb923c', marginBottom: '0.55rem' }}>
+                            {wsOk ?? wsErr}
+                        </p>
+                    )}
+                    <div style={{ ...inputBar, alignItems: 'flex-end', marginBottom: '8px' }}>
+                        <label style={{ flex: '1 1 200px', fontSize: '0.74rem' }}>
+                            Répertoire
+                            <input
+                                style={{ ...input, display: 'block', marginTop: '4px' }}
+                                type="text"
+                                value={wsDir}
+                                onChange={(e) => setWsDir(e.target.value)}
+                                placeholder="/config"
+                            />
+                        </label>
+                        <button
+                            type="button"
+                            disabled={wsListBusy}
+                            onClick={() => {
+                                void (async (): Promise<void> => {
+                                    if (!serverId) return;
+                                    setWsListBusy(true);
+                                    setWsErr(null);
+                                    setWsOk(null);
+                                    try {
+                                        const d = await fetchJson<WorkspaceListResponse>(
+                                            `${EXT_BASE}/workspace/list?${new URLSearchParams({
+                                                server: serverId,
+                                                directory: wsDir,
+                                            }).toString()}`
+                                        );
+                                        setWsEntries(Array.isArray(d.entries) ? d.entries : []);
+                                        setWsOk(`Liste chargée (${String(d.directory)}).`);
+                                    } catch (e: unknown) {
+                                        setWsErr(e instanceof Error ? e.message : 'Listing impossible');
+                                        setWsEntries([]);
+                                    } finally {
+                                        setWsListBusy(false);
+                                    }
+                                })();
+                            }}
+                            style={{
+                                padding: '7px 12px',
+                                borderRadius: '4px',
+                                border: '1px solid rgba(82,169,255,0.55)',
+                                background: 'rgba(82,169,255,0.18)',
+                                color: 'inherit',
+                                fontSize: '0.74rem',
+                                cursor: wsListBusy ? 'wait' : 'pointer',
+                            }}
+                        >
+                            {wsListBusy ? 'Liste…' : 'Lister'}
+                        </button>
+                    </div>
+                    {wsEntries.length > 0 ? (
+                        <div style={{ fontSize: '0.71rem', marginBottom: '10px', opacity: 0.9 }}>
+                            Entrées ({String(wsEntries.length)}) &nbsp;
+                            <span style={{ opacity: 0.65 }}>
+                                (cliquer&nbsp;: dossier&nbsp;→ ouvre sous-arborescence&nbsp;; fichier&nbsp;→ remplit le chemin relatif)&nbsp;.
+                            </span>
+                            <div style={{ marginTop: '6px', display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                                {wsEntries.map((ent, i) => {
+                                    const bn = workspaceEntryBasename(ent);
+                                    const jp = joinWorkspaceListedPath(wsDir, bn);
+                                    return (
+                                        <button
+                                            type="button"
+                                            key={`${bn}-${String(i)}`}
+                                            onClick={() => {
+                                                if (workspaceEntryIsDirectory(ent)) {
+                                                    setWsDir(jp);
+                                                    setWsPath(`${jp}/`);
+                                                    setWsEntries([]);
+                                                    setWsOk(null);
+                                                    setWsErr(null);
+                                                } else {
+                                                    setWsPath(jp);
+                                                }
+                                            }}
+                                            style={{
+                                                padding: '3px 7px',
+                                                borderRadius: '4px',
+                                                border: workspaceEntryIsDirectory(ent)
+                                                    ? '1px solid rgba(251,191,36,0.5)'
+                                                    : '1px solid rgba(148,163,184,0.45)',
+                                                background: workspaceEntryIsDirectory(ent)
+                                                    ? 'rgba(251,191,36,0.12)'
+                                                    : 'rgba(0,0,0,0.12)',
+                                                color: 'inherit',
+                                                cursor: 'pointer',
+                                                fontSize: '0.68rem',
+                                            }}
+                                            title={jp}
+                                        >
+                                            {workspaceEntryIsDirectory(ent) ? `📂 ${bn}` : bn}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    ) : null}
+                    <div style={{ ...inputBar, alignItems: 'flex-end', marginBottom: '8px' }}>
+                        <label style={{ flex: '1 1 280px', fontSize: '0.74rem' }}>
+                            Fichier relatif au volume serveur
+                            <input
+                                style={{ ...input, display: 'block', marginTop: '4px' }}
+                                type="text"
+                                value={wsPath}
+                                onChange={(e) => setWsPath(e.target.value)}
+                                placeholder="/config/foo.yml"
+                            />
+                        </label>
+                        <button
+                            type="button"
+                            disabled={wsFileBusy}
+                            onClick={() => {
+                                void (async (): Promise<void> => {
+                                    if (!serverId) return;
+                                    setWsFileBusy(true);
+                                    setWsErr(null);
+                                    setWsOk(null);
+                                    try {
+                                        const data = await fetchJson<{ content?: string }>(
+                                            `${EXT_BASE}/workspace/file?${new URLSearchParams({
+                                                server: serverId,
+                                                path: wsPath,
+                                            }).toString()}`
+                                        );
+                                        setWsContent(typeof data.content === 'string' ? data.content : '');
+                                        setWsOk('Fichier chargé depuis Wings.');
+                                    } catch (e: unknown) {
+                                        setWsErr(e instanceof Error ? e.message : 'Lecture échouée');
+                                    } finally {
+                                        setWsFileBusy(false);
+                                    }
+                                })();
+                            }}
+                            style={{
+                                padding: '7px 11px',
+                                borderRadius: '4px',
+                                border: '1px solid rgba(94,234,212,0.5)',
+                                background: 'rgba(94,234,212,0.12)',
+                                color: 'inherit',
+                                fontSize: '0.74rem',
+                                cursor: wsFileBusy ? 'wait' : 'pointer',
+                            }}
+                        >
+                            {wsFileBusy ? 'Lecture…' : 'Charger'}
+                        </button>
+                        <button
+                            type="button"
+                            disabled={wsSaveBusy}
+                            onClick={() => {
+                                void (async (): Promise<void> => {
+                                    if (!serverId) return;
+                                    setWsSaveBusy(true);
+                                    setWsErr(null);
+                                    setWsOk(null);
+                                    try {
+                                        await putJson(`${EXT_BASE}/workspace/file`, {
+                                            server: serverId,
+                                            path: wsPath,
+                                            content: wsContent,
+                                        });
+                                        setWsOk('Fichier enregistré sur Wings.');
+                                    } catch (e: unknown) {
+                                        setWsErr(e instanceof Error ? e.message : 'Écriture échouée');
+                                    } finally {
+                                        setWsSaveBusy(false);
+                                    }
+                                })();
+                            }}
+                            style={{
+                                padding: '7px 11px',
+                                borderRadius: '4px',
+                                border: '1px solid rgba(167,243,208,0.55)',
+                                background: 'rgba(34,197,94,0.14)',
+                                color: 'inherit',
+                                fontSize: '0.74rem',
+                                cursor: wsSaveBusy ? 'wait' : 'pointer',
+                            }}
+                        >
+                            {wsSaveBusy ? 'Enregistrement…' : 'Enregistrer'}
+                        </button>
+                    </div>
+                    <textarea
+                        value={wsContent}
+                        onChange={(e) => setWsContent(e.target.value)}
+                        rows={14}
+                        spellCheck={false}
+                        style={{
+                            width: '100%',
+                            fontFamily: 'ui-monospace, Consolas, monospace',
+                            fontSize: '11px',
+                            borderRadius: '4px',
+                            border: '1px solid rgba(128,128,128,0.35)',
+                            background: 'rgba(0,0,0,0.22)',
+                            color: '#e5e7eb',
+                            padding: '8px',
+                            boxSizing: 'border-box',
+                        }}
+                        placeholder="…"
+                    />
+                </section>
+            )}
+
+            <section
+                style={{
+                    borderRadius: '6px',
+                    border: '1px solid rgba(128,128,128,0.25)',
+                    padding: '1rem',
+                    marginBottom: '1rem',
+                    background: 'rgba(0,0,0,0.08)',
+                }}
+            >
+                <h3 style={{ fontSize: '0.875rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                    Presets (liste JSON d&apos;installs)
+                </h3>
+                <p style={{ fontSize: '0.73rem', opacity: 0.78, marginBottom: '0.65rem', lineHeight: 1.5 }}>
+                    Chaque objet&nbsp;:{' '}
+                    <code>provider</code> &laquo;&nbsp;modrinth&nbsp;&raquo; ou &laquo;&nbsp;curseforge&nbsp;&raquo;,
+                    {' '}
+                    <code>project_id</code>, <code>version_id</code> (curseforge&nbsp;: numériques),{' '}
+                    <code>directory</code> facultatif&nbsp;/ <code>null</code>. Appliquer un preset sur un serveur
+                    enchaîne les pulls comme le catalogue&nbsp;; CurseForge requiert la clé <code>CURSEFORGE_API_KEY</code>{' '}
+                    côté panel si le preset contient des lignes curseforge.
+                </p>
+                {presetMigrationPending && (
+                    <p style={{ fontSize: '0.75rem', color: '#fbbf24', marginBottom: '0.5rem' }}>
+                        Migration <code>pmcp_presets</code> absente.
+                    </p>
+                )}
+                {presetErr && <p style={{ fontSize: '0.74rem', color: '#fb923c', marginBottom: '6px' }}>{presetErr}</p>}
+                {presetApplyMsg && (
+                    <p style={{ fontSize: '0.74rem', color: '#93c5fd', marginBottom: '6px' }}>{presetApplyMsg}</p>
+                )}
+                <div style={{ ...inputBar, marginBottom: '10px' }}>
+                    <button
+                        type="button"
+                        disabled={presetBusy}
+                        onClick={() => void reloadPresets()}
+                        style={{
+                            padding: '6px 12px',
+                            borderRadius: '4px',
+                            border: '1px solid rgba(82,169,255,0.55)',
+                            background: 'rgba(82,169,255,0.16)',
+                            color: 'inherit',
+                            fontSize: '0.74rem',
+                            cursor: presetBusy ? 'wait' : 'pointer',
+                        }}
+                    >
+                        {presetBusy ? 'Chargement…' : 'Rafraîchir presets'}
+                    </button>
+                </div>
+                {presetRows.length > 0 ? (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', marginBottom: '10px' }}>
+                        <thead>
+                            <tr style={{ borderBottom: '1px solid rgba(148,163,184,0.35)' }}>
+                                <th style={{ textAlign: 'left', padding: '4px' }}>Nom</th>
+                                <th style={{ textAlign: 'left', padding: '4px' }}>#</th>
+                                <th style={{ textAlign: 'right', padding: '4px' }}>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {presetRows.map((p) => (
+                                <tr key={p.id} style={{ borderBottom: '1px solid rgba(55,65,81,0.35)' }}>
+                                    <td style={{ padding: '4px', verticalAlign: 'top' }}>
+                                        <strong>{p.name}</strong>
+                                        <div style={{ opacity: 0.65, marginTop: '2px', fontSize: '0.68rem' }}>
+                                            id {String(p.id)} · mise à jour {p.updated_at ?? '—'}
+                                        </div>
+                                    </td>
+                                    <td style={{ padding: '4px', opacity: 0.85 }}>
+                                        {Array.isArray(p.items) ? String(p.items.length) : '?'}
+                                    </td>
+                                    <td style={{ padding: '4px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                        {serverId ? (
+                                            <>
+                                                <label style={{ display: 'inline-flex', gap: '4px', marginRight: '6px', fontSize: '0.67rem', verticalAlign: 'middle' }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={presetBackupBeforeApply}
+                                                        disabled={presetApplyBusyId !== null}
+                                                        onChange={(e) => setPresetBackupBeforeApply(e.target.checked)}
+                                                    />
+                                                    Sauvegarder avant
+                                                </label>
+                                                <button
+                                                    type="button"
+                                                    disabled={presetApplyBusyId !== null}
+                                                    onClick={() => {
+                                                        void (async (): Promise<void> => {
+                                                            if (!serverId) return;
+                                                            setPresetApplyBusyId(p.id);
+                                                            setPresetApplyMsg(null);
+                                                            setPresetErr(null);
+                                                            try {
+                                                                const out = await postJson<PresetApplyApiResponse>(
+                                                                    `${EXT_BASE}/presets/apply`,
+                                                                    {
+                                                                        server: serverId,
+                                                                        preset_id: p.id,
+                                                                        backup_before: presetBackupBeforeApply,
+                                                                        backup_context: 'preset',
+                                                                    }
+                                                                );
+                                                                setPresetApplyMsg(
+                                                                    `${out.message ?? 'OK'} (${String(out.installed)}/${String(out.total)})` +
+                                                                        (out.errors?.length
+                                                                            ? ` — ${out.errors.slice(0, 2).join(' | ')}`
+                                                                            : '')
+                                                                );
+                                                                void loadInstallHistory();
+                                                                void reloadBackups();
+                                                            } catch (e: unknown) {
+                                                                setPresetErr(e instanceof Error ? e.message : 'Apply impossible');
+                                                            } finally {
+                                                                setPresetApplyBusyId(null);
+                                                            }
+                                                        })();
+                                                    }}
+                                                    style={{
+                                                        padding: '3px 9px',
+                                                        marginRight: '5px',
+                                                        borderRadius: '4px',
+                                                        border: '1px solid rgba(34,197,94,0.55)',
+                                                        background: 'rgba(34,197,94,0.14)',
+                                                        fontSize: '0.68rem',
+                                                        cursor: presetApplyBusyId !== null ? 'wait' : 'pointer',
+                                                        color: 'inherit',
+                                                    }}
+                                                >
+                                                    {presetApplyBusyId === p.id ? 'Apply…' : 'Appliquer'}
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <span style={{ opacity: 0.5 }}>(serveur requis pour appliquer)</span>
+                                        )}
+                                        <button
+                                            type="button"
+                                            disabled={presetApplyBusyId !== null || presetBusy}
+                                            onClick={() => {
+                                                if (
+                                                    typeof window !== 'undefined' &&
+                                                    ! window.confirm(`Supprimer le preset « ${p.name} » (id ${String(p.id)}) ?`)
+                                                ) {
+                                                    return;
+                                                }
+                                                void (async (): Promise<void> => {
+                                                    setPresetErr(null);
+                                                    try {
+                                                        await jsonDelete(
+                                                            `${EXT_BASE}/presets?${new URLSearchParams({
+                                                                id: String(p.id),
+                                                            }).toString()}`
+                                                        );
+                                                        await reloadPresets();
+                                                        setPresetApplyMsg('Preset supprimé.');
+                                                    } catch (e: unknown) {
+                                                        setPresetErr(e instanceof Error ? e.message : 'Suppression impossible');
+                                                    }
+                                                })();
+                                            }}
+                                            style={{
+                                                padding: '3px 9px',
+                                                borderRadius: '4px',
+                                                border: '1px solid rgba(248,113,113,0.45)',
+                                                background: 'transparent',
+                                                fontSize: '0.68rem',
+                                                cursor: 'pointer',
+                                                color: '#fca5a5',
+                                            }}
+                                        >
+                                            Supprimer
+                                        </button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                ) : (
+                    ! presetBusy ? (
+                        <p style={{ fontSize: '0.74rem', opacity: 0.65 }}>Aucun preset enregistré pour ce compte.</p>
+                    ) : null
+                )}
+                <h4 style={{ fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.45rem', marginTop: '12px' }}>
+                    Créer un preset
+                </h4>
+                <label style={{ display: 'block', fontSize: '0.73rem', marginBottom: '6px' }}>
+                    Nom&nbsp;
+                    <input
+                        type="text"
+                        style={{ ...input, marginTop: '4px', display: 'block' }}
+                        value={presetFormName}
+                        onChange={(e) => setPresetFormName(e.target.value)}
+                        placeholder="mon-pack-mods"
+                    />
+                </label>
+                <label style={{ display: 'block', fontSize: '0.73rem', marginBottom: '6px' }}>
+                    Description&nbsp;
+                    <input
+                        type="text"
+                        style={{ ...input, marginTop: '4px', display: 'block' }}
+                        value={presetFormDesc}
+                        onChange={(e) => setPresetFormDesc(e.target.value)}
+                        placeholder=""
+                    />
+                </label>
+                <label style={{ display: 'block', fontSize: '0.73rem', marginBottom: '6px' }}>
+                    Items (JSON tableau)&nbsp;
+                    <textarea
+                        value={presetFormItemsRaw}
+                        onChange={(e) => setPresetFormItemsRaw(e.target.value)}
+                        rows={8}
+                        spellCheck={false}
+                        style={{
+                            width: '100%',
+                            marginTop: '6px',
+                            fontFamily: 'ui-monospace, Consolas, monospace',
+                            fontSize: '11px',
+                            borderRadius: '4px',
+                            border: '1px solid rgba(148,163,184,0.35)',
+                            background: 'rgba(0,0,0,0.2)',
+                            color: '#e5e7eb',
+                            padding: '8px',
+                            boxSizing: 'border-box',
+                        }}
+                    />
+                </label>
+                <button
+                    type="button"
+                    disabled={presetBusy || presetApplyBusyId !== null}
+                    onClick={() => {
+                        void (async (): Promise<void> => {
+                            let items: unknown;
+                            try {
+                                items = JSON.parse(presetFormItemsRaw) as unknown;
+                            } catch {
+                                setPresetErr('JSON des items invalide.');
+                                return;
+                            }
+                            if (!presetFormName.trim()) {
+                                setPresetErr('Nom preset requis.');
+                                return;
+                            }
+                            setPresetErr(null);
+                            setPresetBusy(true);
+                            try {
+                                await postJson(`${EXT_BASE}/presets`, {
+                                    name: presetFormName.trim(),
+                                    description: presetFormDesc.trim() || undefined,
+                                    items,
+                                });
+                                await reloadPresets();
+                                setPresetApplyMsg('Preset créé.');
+                            } catch (e: unknown) {
+                                setPresetErr(e instanceof Error ? e.message : 'Création impossible');
+                            } finally {
+                                setPresetBusy(false);
+                            }
+                        })();
+                    }}
+                    style={{
+                        marginTop: '6px',
+                        padding: '7px 14px',
+                        borderRadius: '4px',
+                        border: '1px solid rgba(129,140,248,0.55)',
+                        background: 'rgba(129,140,248,0.14)',
+                        color: 'inherit',
+                        fontSize: '0.75rem',
+                        cursor: presetBusy ? 'wait' : 'pointer',
+                    }}
+                >
+                    Enregistrer le preset
+                </button>
+            </section>
 
             {serverId && (
                 <section
@@ -2011,6 +2904,26 @@ export default function McPluginsDashboard(): React.ReactElement {
                             {installErr && (
                                 <p style={{ fontSize: '0.78rem', color: '#f87171', marginBottom: '0.5rem' }}>{installErr}</p>
                             )}
+                            <label
+                                style={{
+                                    fontSize: '0.72rem',
+                                    opacity: 0.82,
+                                    display: 'flex',
+                                    gap: '8px',
+                                    alignItems: 'center',
+                                    marginBottom: '0.55rem',
+                                    cursor: serverId ? 'pointer' : 'not-allowed',
+                                }}
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={catalogBackupBefore}
+                                    disabled={!serverId}
+                                    onChange={(e) => setCatalogBackupBefore(e.target.checked)}
+                                />
+                                Compresser le dossier cible avant install (archive .tar.gz via Wings sur le volume
+                                serveur).
+                            </label>
                             <h4 style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem' }}>Versions</h4>
                             <div style={{ overflowX: 'auto' }}>
                                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem' }}>

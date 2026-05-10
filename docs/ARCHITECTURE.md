@@ -30,6 +30,8 @@ Le module ne parle **pas** au disque du conteneur jeu en contournant Wings : tou
 
 ## Data flow : install d’un plugin
 
+Réponse installer : champ optionnel **`backup`** (`id`, `archive`) lorsque **`backup_before: true`** est envoyé avec un **`backup_context`** parmi `catalog` | `history` | `scheduled` : compression Wings du dernier segment du dossier cible (`.tar.gz` sur le volume), ligne en **`pmcp_backups`**.
+
 ```mermaid
 sequenceDiagram
   participant U as Utilisateur
@@ -198,6 +200,27 @@ DTO stables garantissent aucun leak de JSON tiers vers le frontend.
 ## Double Panel frontend
 
 Backend unique ; UI dupliquée volontairement entre `src/frontend/pterodactyl/` (Vue 2.7 Options API) et `src/frontend/pelican/` (Livewire/Alpine) — rationales dans `src/frontend/CLAUDE.md`.
+
+## Contexte Minecraft (`server/context`)
+
+L’endpoint client **GET** associé au module (déclaré dans les routes Blueprint `ext/routes/client.php`) renvoie un **contexte lecture seule** pour l’UI catalogue : aucun appel Wings, pas de modification disque.
+
+Le handler délègue la construction du payload à `PteroMcPlugins\Services\ServerMcContextBuilder::build($server)` (fichier `ext/app/Services/ServerMcContextBuilder.php`, chargé via `require_once` depuis la route pour rester compatible avec les panels où l’autoload Composer de l’extension n’est pas garanti).
+
+### Forme du payload
+
+| Champ | Rôle |
+|--------|------|
+| `minecraft_versions_hint` | Liste de chaînes candidates (tri insensible à la casse) : versions `1.x`, canaux (`latest`, `snapshot`, …), adresses IPv4 détectées dans le startup analysé, extractions depuis URLs (Modrinth/…), motifs Paper/Purpur/Fabric/Quilt. Filtres pour éviter les faux positifs courts type options JVM. |
+| `egg_variables` | Sous-ensemble des variables d’environnement de l’œuf / serveur pour les clés d’intérêt (`MINECRAFT_VERSION`, `MC_VERSION`, `BEDROCK_VERSION`, …). |
+| `egg_name` / `nest_name` | Libellés affichage / heuristiques (ex. détection Bedrock). |
+| `context_meta` | `bedrock_like_egg` : heuristique œuf/nest ou présence `BEDROCK_VERSION`. `startup_has_placeholders_left` : après expansion `{{ ENV }}` depuis l’env fusionné (valeurs serveur + défauts œuf), il reste des marqueurs `{{ … }}` non résolus (startup template). |
+
+Les indices proviennent de : **variables fusionnées** (valeur instance + repli sur `default_value` des variables œuf), puis **startup** après substitution des placeholders, avec motifs additionnels sur la « haystack » (URLs, noms de jars).
+
+### Tests
+
+La logique du builder est couverte par des tests Pest standalone (`composer test`), avec un stub `Pterodactyl\Models\Server` sous `tests/stubs/` — le panel réel fournit le modèle Eloquent en production.
 
 ## Déploiement Blueprint
 

@@ -1,0 +1,31 @@
+{
+  "name": "pteromcplugins/blueprint-extension",
+  "description": "Extension Blueprint PteroMcPlugins — autoload dev + tests locaux",
+  "license": "MIT",
+  "require": {
+    "php": "^8.2"
+  },
+  "require-dev": {
+    "pestphp/pest": "^3.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "PteroMcPlugins\\": "ext/app/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Tests\\": "tests/",
+      "Pterodactyl\\Models\\": "tests/stubs/Pterodactyl/Models/"
+    }
+  },
+  "config": {
+    "allow-plugins": {
+      "pestphp/pest-plugin": true
+    },
+    "sort-packages": true
+  },
+  "scripts": {
+    "test": "pest"
+  }
+}

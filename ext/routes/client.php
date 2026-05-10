@@ -9,13 +9,24 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
+
+require_once dirname(__DIR__) . '/app/Services/ServerMcContextBuilder.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpInstallCompressPaths.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpInstallDirectoryBackup.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpHttpException.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpArtifactInstall.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpCheckUpdatesBatch.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpWorkspacePath.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpInstallBackupRestore.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpPresetItems.php';
 
 /**
  * Routes étend `/api/client/extensions/{identifier}` (voir blueprint.zip/docs/concepts/routing).
  * Middleware / auth sont appliqués par le Panel hôte lors du chargement de ce fichier.
  *
- * Closures uniquement (pas de contrôleurs dédiés) pour éviter BindingResolutionException
- * si l’autoload des classes d’extension Blueprint n’est pas résolu.
+ * Classe métier incluse avec `require_once` (`ext/app/Services`) pour éviter
+ * BindingResolutionException si l'autoload Composer de l’extension n’est pas enregistré.
  */
 
 /*
@@ -276,118 +287,9 @@ $modrinthLatestFromVersionList = static function (mixed $body): ?array {
 /**
  * Contexte MC / Panel pour filtrage catalogue côté client.
  *
- * @return array{minecraft_versions_hint: list<string>, egg_variables: array<string, string>, egg_name: string|null, nest_name: string|null}
+ * @see \PteroMcPlugins\Services\ServerMcContextBuilder::build()
  */
-$serverMcContextPayload = static function (\Pterodactyl\Models\Server $server): array {
-    $hints = [];
-    $eggVarsSubset = [];
-
-    $keysInterest = [
-        'MINECRAFT_VERSION',
-        'MC_VERSION',
-        'SERVER_VERSION',
-        'VANILLA_VERSION',
-        'GAME_VERSION',
-        'BEDROCK_VERSION',
-    ];
-
-    $addHint = static function (string $raw) use (&$hints): void {
-        foreach (preg_split('/[\s,;]+/', $raw, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $part) {
-
-            $p = trim((string) $part);
-            $p = trim($p, "\"' ");
-
-            if ($p === '') {
-                continue;
-            }
-
-            if (! preg_match('/^[\w.\-+]{2,48}$/', $p)) {
-                continue;
-
-            }
-
-            $hints[strtolower($p)] = $p;
-
-        }
-
-    };
-
-    try {
-        if (method_exists($server, 'variables')) {
-            $server->loadMissing('variables.variable');
-            foreach ($server->variables as $sv) {
-                if (! is_object($sv)) {
-                    continue;
-                }
-
-                $egg = isset($sv->variable) ? $sv->variable : null;
-                $key = '';
-                if (is_object($egg) && isset($egg->env_variable)) {
-
-                    $key = (string) $egg->env_variable;
-                }
-
-                $valRaw = '';
-
-                if (isset($sv->variable_value)) {
-                    $valRaw = trim((string) $sv->variable_value);
-                }
-
-                if ($key !== '' && $valRaw !== '') {
-                    if (in_array($key, $keysInterest, true)) {
-                        $eggVarsSubset[$key] = $valRaw;
-                        $addHint($valRaw);
-                    }
-
-                    if (preg_match('/MINECRAFT|MC_VERSION|GAME_VERSION|VANILLA|BEDROCK|VERSION\b/i', $key)) {
-
-                        $addHint($valRaw);
-
-                    }
-
-                }
-
-            }
-
-        }
-
-    } catch (\Throwable) {
-
-    }
-
-    if (
-        preg_match_all(
-            '/(\d+(?:\.\d+)*(?:-[0-9A-Za-z.]+)?)/',
-
-            (string) ($server->startup ?? ''),
-            $ms
-        )
-
-    ) {
-
-        foreach (($ms[1] ?? []) as $cand) {
-
-            $addHint((string) $cand);
-
-        }
-
-    }
-
-    $server->loadMissing('egg', 'nest');
-
-    $hintList = array_values($hints);
-
-    usort($hintList, fn (string $a, string $b): int => strcmp(strtolower($a), strtolower($b)));
-
-    return [
-        'minecraft_versions_hint' => $hintList,
-        'egg_variables' => $eggVarsSubset,
-        'egg_name' => $server->egg?->name ?? null,
-
-        'nest_name' => $server->nest?->name ?? null,
-    ];
-
-};
+$serverMcContextPayload = static fn (\Pterodactyl\Models\Server $server): array => \PteroMcPlugins\Services\ServerMcContextBuilder::build($server);
 
 /** Résout uuidShort / uuid / uuid sans tirets → Server Panel. */
 $resolveServer = static function (string $token) {
@@ -657,6 +559,8 @@ Route::post('/install/modrinth', static function (Request $request) use (
         'project_id' => ['required', 'string', 'max:128'],
         'version_id' => ['required', 'string', 'max:32', 'regex:/^[A-Za-z0-9_-]+$/'],
         'directory' => ['sometimes', 'nullable', 'string', 'max:255'],
+        'backup_before' => ['sometimes', 'boolean'],
+        'backup_context' => ['sometimes', 'nullable', 'string', 'max:48', 'regex:/^[a-z0-9_-]+$/'],
     ]);
 
     if ($validator->fails()) {
@@ -704,128 +608,38 @@ Route::post('/install/modrinth', static function (Request $request) use (
         ], 403);
     }
 
-    try {
-        $vr = $modrinthGet('/version/' . rawurlencode($data['version_id']), []);
-    } catch (\Throwable $e) {
-        return response()->json([
-            'message' => 'Réseau indisponible vers Modrinth.',
-            'detail' => config('app.debug') ? $e->getMessage() : null,
-        ], 503);
-    }
-
-    if ($vr->status() === 404) {
-        return response()->json(['message' => 'Version Modrinth introuvable.'], 404);
-    }
-    if (! $vr->successful()) {
-        return response()->json([
-            'message' => 'Modrinth a répondu une erreur.',
-            'status' => $vr->status(),
-        ], 502);
-    }
-
-    $version = $vr->json();
-    if (! is_array($version)) {
-        return response()->json(['message' => 'Réponse Modrinth invalide.'], 502);
-    }
-
-    $vpid = isset($version['project_id']) ? (string) $version['project_id'] : '';
-    if ($vpid === '' || $vpid !== $data['project_id']) {
-        return response()->json(['message' => 'La version ne correspond pas à ce projet.'], 422);
-    }
-
-    $primary = null;
-    foreach (is_array($version['files'] ?? null) ? $version['files'] : [] as $f) {
-        if (is_array($f) && ! empty($f['primary'])) {
-            $primary = $f;
-            break;
-        }
-    }
-    if ($primary === null && isset($version['files'][0]) && is_array($version['files'][0])) {
-        $primary = $version['files'][0];
-    }
-
-    if ($primary === null || empty($primary['url'])) {
-        return response()->json(['message' => 'Aucun fichier téléchargeable pour cette version.'], 422);
-    }
-
-    $fileUrl = (string) $primary['url'];
-    $filename = isset($primary['filename']) ? (string) $primary['filename'] : null;
-    if ($filename === '') {
-        $filename = null;
-    }
-
-    $dirRaw = $data['directory'] ?? null;
-    $directory = $normalizeInstallDirectory(is_string($dirRaw) ? $dirRaw : null);
-    if (is_string($dirRaw) && trim($dirRaw) !== '' && $directory === null) {
-        return response()->json(['message' => 'Chemin cible invalide (traversée interdite).'], 422);
-    }
-    if ($directory === null) {
-        $directory = $defaultInstallDirectory($version, $data['project_id'], $server);
-    }
-
-    /** @var \Pterodactyl\Repositories\Wings\DaemonFileRepository $repo */
-    $repo = app(\Pterodactyl\Repositories\Wings\DaemonFileRepository::class);
-
-    $pullParams = array_filter([
-        'filename' => $filename,
-    ], static fn ($v) => $v !== null && $v !== '');
+    $dirInput = $data['directory'] ?? null;
+    $wantBackup = $request->boolean('backup_before');
+    $bc = isset($data['backup_context']) ? trim((string) $data['backup_context']) : '';
 
     try {
-        $repo->setServer($server)->pull($fileUrl, $directory, $pullParams);
-    } catch (\Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException $e) {
-        return response()->json([
-            'message' => 'Échec du téléchargement distant via Wings.',
-            'detail' => config('app.debug') ? $e->getMessage() : null,
-        ], 502);
-    } catch (\Throwable $e) {
-        return response()->json([
-            'message' => 'Erreur lors de l’installation sur le serveur.',
-            'detail' => config('app.debug') ? $e->getMessage() : null,
-        ], 500);
+        $out = \PteroMcPlugins\Services\PmcpArtifactInstall::modrinth(
+            $server,
+            $user,
+            $data['project_id'],
+            $data['version_id'],
+            is_string($dirInput) ? $dirInput : null,
+            $wantBackup,
+            $bc,
+            $modrinthGet,
+            $validProjectId,
+            $normalizeInstallDirectory,
+            $defaultInstallDirectory,
+            $pmcpInstallBlockedByPolicy,
+        );
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(
+            array_merge(['message' => $e->getMessage()], $e->extra),
+            $e->status
+        );
     }
 
-    $loaders = is_array($version['loaders'] ?? null) ? $version['loaders'] : [];
-
-    $eventId = null;
-    if (Schema::hasTable('pmcp_install_events')) {
-        try {
-            $versionLabel = null;
-            if (isset($version['version_number']) && is_string($version['version_number']) && $version['version_number'] !== '') {
-                $versionLabel = $version['version_number'];
-            } elseif (isset($version['name']) && is_string($version['name']) && $version['name'] !== '') {
-                $versionLabel = $version['name'];
-            }
-            $now = now();
-            $eventId = DB::table('pmcp_install_events')->insertGetId([
-                'server_id' => $server->id,
-                'user_id' => $user->id,
-                'provider' => 'modrinth',
-                'project_id' => $data['project_id'],
-                'version_id' => $data['version_id'],
-                'directory' => $directory,
-                'filename' => $filename,
-                'version_label' => $versionLabel,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
-        } catch (\Throwable) {
-            $eventId = null;
-        }
-    }
-
-    return response()->json([
-        'message' => 'Téléchargement demandé sur le serveur (pull distant Wings).',
-        'directory' => $directory,
-        'filename' => $filename,
-        'loaders' => $loaders,
-        'restart_recommended' => true,
-        'event_id' => $eventId,
-    ]);
+    return response()->json($out);
 });
 
 Route::post('/install/curseforge', static function (Request $request) use (
     $curseForgeApiKey,
-    $curseForgeAuthFailureHttp,
+    $curseForgeAuthFailureMessage,
     $curseForgeCfResponseData,
     $curseForgeGameIdMc,
     $curseForgeGet,
@@ -849,6 +663,8 @@ Route::post('/install/curseforge', static function (Request $request) use (
         'mod_id' => ['required', 'integer', 'min:1', 'max:2147483646'],
         'file_id' => ['required', 'integer', 'min:1', 'max:2147483646'],
         'directory' => ['sometimes', 'nullable', 'string', 'max:255'],
+        'backup_before' => ['sometimes', 'boolean'],
+        'backup_context' => ['sometimes', 'nullable', 'string', 'max:48', 'regex:/^[a-z0-9_-]+$/'],
     ]);
 
     if ($validator->fails()) {
@@ -895,194 +711,35 @@ Route::post('/install/curseforge', static function (Request $request) use (
         ], 403);
     }
 
-    try {
-        $mr = $curseForgeGet('/mods/' . $modId);
-    } catch (\Throwable $e) {
-        return response()->json([
-            'message' => 'Réseau indisponible vers CurseForge.',
-            'detail' => config('app.debug') ? $e->getMessage() : null,
-        ], 503);
-    }
-
-    if ($mr === false) {
-        return response()->json(['message' => 'CurseForge : clé API absente ou refusée.'], 503);
-    }
-
-    if ($mr->status() === 404) {
-        return response()->json(['message' => 'Mod CurseForge introuvable.'], 404);
-    }
-
-    if (! $mr->successful()) {
-        $authResp = $curseForgeAuthFailureHttp($mr);
-        if ($authResp !== null) {
-            return $authResp;
-        }
-
-        return response()->json([
-            'message' => 'CurseForge a répondu une erreur.',
-            'status' => $mr->status(),
-        ], 502);
-    }
-
-    $modRow = $curseForgeCfResponseData($mr->json());
-    if ($modRow === null) {
-        return response()->json(['message' => 'Réponse CurseForge invalide (mod).'], 502);
-    }
-
-    if (isset($modRow['gameId']) && (int) $modRow['gameId'] !== $curseForgeGameIdMc) {
-        return response()->json(['message' => 'Ce projet n’est pas Minecraft Java (gameId différent dans CurseForge).'], 422);
-    }
-
-    $classId = isset($modRow['classId']) ? (int) $modRow['classId'] : null;
+    $dirInput = $data['directory'] ?? null;
+    $wantBackup = $request->boolean('backup_before');
+    $bc = isset($data['backup_context']) ? trim((string) $data['backup_context']) : '';
 
     try {
-        $fr = $curseForgeGet('/mods/' . $modId . '/files/' . $fileId);
-    } catch (\Throwable $e) {
-        return response()->json([
-            'message' => 'Réseau indisponible vers CurseForge (fichier).',
-            'detail' => config('app.debug') ? $e->getMessage() : null,
-        ], 503);
+        $out = \PteroMcPlugins\Services\PmcpArtifactInstall::curseforge(
+            $server,
+            $user,
+            $modId,
+            $fileId,
+            is_string($dirInput) ? $dirInput : null,
+            $wantBackup,
+            $bc,
+            $curseForgeGameIdMc,
+            $curseForgeGet,
+            $curseForgeAuthFailureMessage,
+            $curseForgeCfResponseData,
+            $defaultInstallDirectoryCurseForge,
+            $normalizeInstallDirectory,
+            $pmcpInstallBlockedByPolicy,
+        );
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(
+            array_merge(['message' => $e->getMessage()], $e->extra),
+            $e->status
+        );
     }
 
-    if ($fr === false) {
-        return response()->json(['message' => 'CurseForge : clé API absente ou refusée.'], 503);
-    }
-
-    if ($fr->status() === 404) {
-        return response()->json(['message' => 'Fichier CurseForge introuvable.'], 404);
-    }
-
-    if (! $fr->successful()) {
-        $authResp = $curseForgeAuthFailureHttp($fr);
-        if ($authResp !== null) {
-            return $authResp;
-        }
-
-        return response()->json([
-            'message' => 'CurseForge a répondu une erreur (fichier).',
-            'status' => $fr->status(),
-        ], 502);
-    }
-
-    $fileRow = $curseForgeCfResponseData($fr->json());
-    if ($fileRow === null) {
-        return response()->json(['message' => 'Réponse CurseForge invalide (fichier).'], 502);
-    }
-
-    if (isset($fileRow['modId']) && (int) $fileRow['modId'] !== $modId) {
-        return response()->json(['message' => 'Le fichier ne correspond pas à ce mod.'], 422);
-    }
-
-    $filename = isset($fileRow['fileName']) && is_string($fileRow['fileName']) && $fileRow['fileName'] !== ''
-        ? (string) $fileRow['fileName']
-        : null;
-
-    try {
-        $dur = $curseForgeGet('/mods/' . $modId . '/files/' . $fileId . '/download-url');
-    } catch (\Throwable $e) {
-        return response()->json([
-            'message' => 'Réseau indisponible vers CurseForge (URL de téléchargement).',
-            'detail' => config('app.debug') ? $e->getMessage() : null,
-        ], 503);
-    }
-
-    if ($dur === false) {
-        return response()->json(['message' => 'CurseForge : clé API absente ou refusée.'], 503);
-    }
-
-    if ($dur->status() === 404) {
-        return response()->json(['message' => 'URL de téléchargement introuvable.'], 404);
-    }
-
-    if (! $dur->successful()) {
-        $authResp = $curseForgeAuthFailureHttp($dur);
-        if ($authResp !== null) {
-            return $authResp;
-        }
-
-        return response()->json([
-            'message' => 'CurseForge a répondu une erreur (URL de téléchargement).',
-            'status' => $dur->status(),
-        ], 502);
-    }
-
-    $dlPayload = $dur->json();
-    $fileUrl = null;
-    if (is_array($dlPayload) && array_key_exists('data', $dlPayload)) {
-        $d = $dlPayload['data'];
-        if (is_string($d) && $d !== '') {
-            $fileUrl = $d;
-        }
-    }
-
-    if ($fileUrl === null || ! filter_var($fileUrl, FILTER_VALIDATE_URL)) {
-        return response()->json(['message' => 'URL de téléchargement CurseForge invalide ou absente.'], 502);
-    }
-
-    $dirRaw = $data['directory'] ?? null;
-    $directory = $normalizeInstallDirectory(is_string($dirRaw) ? $dirRaw : null);
-    if (is_string($dirRaw) && trim($dirRaw) !== '' && $directory === null) {
-        return response()->json(['message' => 'Chemin cible invalide (traversée interdite).'], 422);
-    }
-
-    if ($directory === null) {
-        $directory = $defaultInstallDirectoryCurseForge($classId, $server);
-    }
-
-    /** @var \Pterodactyl\Repositories\Wings\DaemonFileRepository $repo */
-    $repo = app(\Pterodactyl\Repositories\Wings\DaemonFileRepository::class);
-
-    $pullParams = array_filter([
-        'filename' => $filename,
-    ], static fn ($v) => $v !== null && $v !== '');
-
-    try {
-        $repo->setServer($server)->pull($fileUrl, $directory, $pullParams);
-    } catch (\Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException $e) {
-        return response()->json([
-            'message' => 'Échec du téléchargement distant via Wings.',
-            'detail' => config('app.debug') ? $e->getMessage() : null,
-        ], 502);
-    } catch (\Throwable $e) {
-        return response()->json([
-            'message' => 'Erreur lors de l’installation sur le serveur.',
-            'detail' => config('app.debug') ? $e->getMessage() : null,
-        ], 500);
-    }
-
-    $displayNameForLog = isset($fileRow['displayName']) && is_string($fileRow['displayName']) && $fileRow['displayName'] !== ''
-        ? $fileRow['displayName']
-        : $filename;
-
-    $eventId = null;
-    if (Schema::hasTable('pmcp_install_events')) {
-        try {
-            $now = now();
-            $eventId = DB::table('pmcp_install_events')->insertGetId([
-                'server_id' => $server->id,
-                'user_id' => $user->id,
-                'provider' => 'curseforge',
-                'project_id' => (string) $modId,
-                'version_id' => (string) $fileId,
-                'directory' => $directory,
-                'filename' => $filename,
-                'version_label' => is_string($displayNameForLog) ? $displayNameForLog : null,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
-        } catch (\Throwable) {
-            $eventId = null;
-        }
-    }
-
-    return response()->json([
-        'message' => 'Téléchargement demandé sur le serveur (pull distant Wings).',
-        'directory' => $directory,
-        'filename' => $filename,
-        'loaders' => [],
-        'restart_recommended' => true,
-        'event_id' => $eventId,
-    ]);
+    return response()->json($out);
 });
 
 Route::get('/install/history', static function (Request $request) use ($resolveServer): JsonResponse {
@@ -1692,180 +1349,560 @@ Route::post('/install/check-updates', static function (Request $request) use (
 
     }
 
-    $results = [];
-
-    foreach ($data['entries'] as $entry) {
-        if (! is_array($entry)) {
-            continue;
-        }
-
-        $prov = (string) $entry['provider'];
-        $pid = (string) $entry['project_id'];
-        $vid = (string) $entry['version_id'];
-        $pinKey = $prov . ':' . $pid;
-        $pin = $pinMap[$pinKey] ?? null;
-
-        $row = [
-            'provider' => $prov,
-            'project_id' => $pid,
-            'current_version_id' => $vid,
-            'latest_version_id' => null,
-            'latest_version_label' => null,
-            'latest_changelog' => null,
-            'update_available' => false,
-            'pin' => $pin,
-            'error' => null,
-        ];
-
-        try {
-            if ($prov === 'modrinth') {
-                if (! $validProjectId($pid)) {
-                    $row['error'] = 'Identifiant projet Modrinth invalide.';
-                    $results[] = $row;
-                    continue;
-                }
-
-                $vr = $modrinthGet('/project/' . rawurlencode($pid) . '/version', ['limit' => 50]);
-                if (! $vr->successful()) {
-                    $row['error'] = 'Modrinth indisponible ou projet introuvable.';
-                    $results[] = $row;
-                    continue;
-                }
-
-                $latest = $modrinthLatestFromVersionList($vr->json());
-
-                if (! is_array($latest) || empty($latest['id'])) {
-
-                    $results[] = $row;
-                    continue;
-                }
-
-                $lid = (string) $latest['id'];
-                $row['latest_version_id'] = $lid;
-
-                $row['latest_version_label'] = isset($latest['version_number'])
-                    ? (string) $latest['version_number']
-
-                    : (isset($latest['name']) ? (string) $latest['name'] : null);
-
-                $row['update_available'] = $lid !== $vid;
-
-                if ($pin !== null && $lid !== '' && isset($pin['pinned_version_id']) && $lid !== $pin['pinned_version_id']) {
-                    /* On signale encore une mise à jour « officielle », le client peut afficher l’épingle. */
-                    $row['pinned_differs_from_latest'] = true;
-                }
-
-                $chg = isset($latest['changelog']) && is_string($latest['changelog'])
-                    ? $pmcpTruncatePlain($latest['changelog'], 680)
-                    : '';
-
-                if ($chg !== '') {
-                    $row['latest_changelog'] = $chg;
-                }
-
-            } else {
-                /* CurseForge */
-                if ($curseForgeApiKey() === null) {
-                    $row['error'] = 'CurseForge : clé API absente.';
-                    $results[] = $row;
-
-                    continue;
-                }
-
-                if (! $validCurseForgeModId($pid)) {
-                    $row['error'] = 'Identifiant mod CurseForge invalide.';
-                    $results[] = $row;
-                    continue;
-                }
-
-                $fr = $curseForgeGet('/mods/' . $pid . '/files', ['pageSize' => 50, 'index' => 0]);
-                if ($fr === false) {
-                    $row['error'] = 'CurseForge : clé API absente.';
-                    $results[] = $row;
-
-                    continue;
-                }
-
-                $authMsgFile = $curseForgeAuthFailureMessage($fr);
-                if ($authMsgFile !== null) {
-                    $row['error'] = $authMsgFile;
-                    $results[] = $row;
-
-                    continue;
-                }
-
-                if (! $fr->successful()) {
-
-                    $row['error'] = 'CurseForge indisponible ou mod introuvable.';
-                    $results[] = $row;
-                    continue;
-                }
-
-                $decoded = $fr->json();
-                $files = [];
-                if (is_array($decoded) && isset($decoded['data']) && is_array($decoded['data'])) {
-                    $files = $decoded['data'];
-                }
-
-                $best = null;
-                $bestDt = '';
-                foreach ($files as $f) {
-                    if (! is_array($f) || empty($f['id'])) {
-
-                        continue;
-                    }
-
-                    $dt = isset($f['fileDate']) ? (string) $f['fileDate'] : '';
-                    if ($best === null || ($dt !== '' && strcmp($dt, $bestDt) > 0)) {
-                        $best = $f;
-                        $bestDt = $dt;
-                    }
-
-                }
-
-                if (! is_array($best)) {
-                    $results[] = $row;
-                    continue;
-                }
-
-                $lid = isset($best['id']) ? (string) $best['id'] : '';
-
-                $row['latest_version_id'] = $lid;
-                $label = '';
-
-                if (isset($best['displayName']) && is_string($best['displayName'])) {
-
-                    $label = $best['displayName'];
-                } elseif (isset($best['fileName']) && is_string($best['fileName'])) {
-
-                    $label = $best['fileName'];
-                }
-
-                $row['latest_version_label'] = $label !== '' ? $label : null;
-
-                $row['update_available'] = $lid !== '' && $lid !== $vid;
-
-                if ($pin !== null && $lid !== '' && isset($pin['pinned_version_id']) && $lid !== $pin['pinned_version_id']) {
-                    $row['pinned_differs_from_latest'] = true;
-                }
-
-                $chCf = isset($best['changelogHtml']) && is_string($best['changelogHtml'])
-                    ? $pmcpTruncatePlain(strip_tags($best['changelogHtml']), 680)
-                    : '';
-
-                if ($chCf !== '') {
-                    $row['latest_changelog'] = $chCf;
-                }
-            }
-
-        } catch (\Throwable $e) {
-            $row['error'] = config('app.debug') ? $e->getMessage() : 'Erreur réseau ou parsing.';
-        }
-
-        $results[] = $row;
-    }
+    $results = \PteroMcPlugins\Services\PmcpCheckUpdatesBatch::run($pinMap, $data['entries'], [
+        'modrinthGet' => $modrinthGet,
+        'modrinthLatestFromVersionList' => $modrinthLatestFromVersionList,
+        'curseForgeApiKey' => $curseForgeApiKey,
+        'curseForgeGet' => $curseForgeGet,
+        'validProjectId' => $validProjectId,
+        'validCurseForgeModId' => $validCurseForgeModId,
+        'curseForgeAuthFailureMessage' => $curseForgeAuthFailureMessage,
+        'pmcpTruncatePlain' => $pmcpTruncatePlain,
+    ]);
 
     return response()->json(['items' => $results]);
+});
+
+Route::get('/install/backups', static function (Request $request) use ($resolveServer): JsonResponse {
+    if (! Schema::hasTable('pmcp_backups')) {
+        return response()->json(['items' => [], 'migration_pending' => true]);
+    }
+
+    $validator = Validator::make($request->query(), [
+        'server' => ['required', 'string', 'max:64'],
+        'limit' => ['sometimes', 'integer', 'min:1', 'max:100'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $data = $validator->validated();
+    $limit = (int) ($data['limit'] ?? 40);
+
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $server = $resolveServer($data['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+    $server->loadMissing('subusers');
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_READ, $server)) {
+        return response()->json(['message' => 'Permission refusée.'], 403);
+    }
+
+    $rows = DB::table('pmcp_backups')
+        ->where('server_id', $server->id)
+        ->orderByDesc('id')
+        ->limit($limit)
+        ->get(['id', 'install_directory', 'archive_relative_path', 'context', 'provider', 'project_id', 'version_id', 'created_at']);
+
+    $items = [];
+    foreach ($rows as $r) {
+        $items[] = [
+            'id' => (int) $r->id,
+            'install_directory' => (string) $r->install_directory,
+            'archive_relative_path' => (string) $r->archive_relative_path,
+            'context' => (string) $r->context,
+            'provider' => $r->provider !== null ? (string) $r->provider : null,
+            'project_id' => $r->project_id !== null ? (string) $r->project_id : null,
+            'version_id' => $r->version_id !== null ? (string) $r->version_id : null,
+            'created_at' => $r->created_at !== null ? (string) $r->created_at : null,
+        ];
+    }
+
+    return response()->json(['items' => $items]);
+});
+
+Route::post('/install/backups/restore', static function (Request $request) use ($resolveServer): JsonResponse {
+    if (! Schema::hasTable('pmcp_backups')) {
+        return response()->json(['message' => 'Table pmcp_backups absente.'], 503);
+    }
+
+    $validator = Validator::make($request->all(), [
+        'server' => ['required', 'string', 'max:64'],
+        'backup_id' => ['required', 'integer', 'min:1'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $data = $validator->validated();
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $server = $resolveServer($data['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+    $server->loadMissing('node', 'subusers');
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+
+    try {
+        $server->validateCurrentState();
+    } catch (\Pterodactyl\Exceptions\Http\Server\ServerStateConflictException) {
+        return response()->json([
+            'message' => 'Le serveur ne permet pas cette action pour le moment.',
+        ], 409);
+    }
+
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_CREATE, $server)) {
+        return response()->json(['message' => 'Permission refusée : écriture fichiers.'], 403);
+    }
+
+    $row = DB::table('pmcp_backups')
+        ->where('id', (int) $data['backup_id'])
+        ->where('server_id', $server->id)
+        ->first(['archive_relative_path']);
+
+    if ($row === null) {
+        return response()->json(['message' => 'Sauvegarde introuvable pour ce serveur.'], 404);
+    }
+
+    try {
+        \PteroMcPlugins\Services\PmcpInstallBackupRestore::decompressWingsArchive(
+            $server,
+            (string) $row->archive_relative_path
+        );
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(
+            array_merge(['message' => $e->getMessage()], $e->extra),
+            $e->status
+        );
+    }
+
+    return response()->json([
+        'message' => 'Archive extraite dans le dossier du serveur (Wings decompress). Redémarrage souvent nécessaire.',
+        'archive' => (string) $row->archive_relative_path,
+    ]);
+});
+
+Route::get('/workspace/list', static function (Request $request) use ($resolveServer): JsonResponse {
+    if (! class_exists(\Pterodactyl\Repositories\Wings\DaemonFileRepository::class)) {
+        return response()->json(['message' => 'DaemonFileRepository introuvable.'], 500);
+    }
+
+    $validator = Validator::make($request->query(), [
+        'server' => ['required', 'string', 'max:64'],
+        'directory' => ['sometimes', 'nullable', 'string', 'max:255'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $q = $validator->validated();
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+    $server = $resolveServer($q['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+    $server->loadMissing('subusers');
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_READ, $server)) {
+        return response()->json(['message' => 'Permission refusée : lecture fichier.'], 403);
+    }
+
+    try {
+        $dir = \PteroMcPlugins\Services\PmcpWorkspacePath::sanitizeDirectory($q['directory'] ?? '/config');
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(['message' => $e->getMessage()], $e->status);
+    }
+
+    /** @var \Pterodactyl\Repositories\Wings\DaemonFileRepository $repo */
+    $repo = app(\Pterodactyl\Repositories\Wings\DaemonFileRepository::class);
+    try {
+        $list = $repo->setServer($server)->getDirectory($dir);
+    } catch (\Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException $e) {
+        return response()->json([
+            'message' => 'Impossible de lister le répertoire via Wings.',
+            'detail' => config('app.debug') ? $e->getMessage() : null,
+        ], 502);
+    }
+
+    return response()->json(['directory' => $dir, 'entries' => is_array($list) ? $list : []]);
+});
+
+Route::get('/workspace/file', static function (Request $request) use ($resolveServer): JsonResponse {
+    if (! class_exists(\Pterodactyl\Repositories\Wings\DaemonFileRepository::class)) {
+        return response()->json(['message' => 'DaemonFileRepository introuvable.'], 500);
+    }
+
+    $validator = Validator::make($request->query(), [
+        'server' => ['required', 'string', 'max:64'],
+        'path' => ['required', 'string', 'max:512'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $q = $validator->validated();
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+    $server = $resolveServer($q['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+    $server->loadMissing('subusers');
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_READ, $server)) {
+        return response()->json(['message' => 'Permission refusée : lecture fichier.'], 403);
+    }
+
+    try {
+        $rel = \PteroMcPlugins\Services\PmcpWorkspacePath::sanitizeFilePath($q['path']);
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(['message' => $e->getMessage()], $e->status);
+    }
+
+    /** @var \Pterodactyl\Repositories\Wings\DaemonFileRepository $repo */
+    $repo = app(\Pterodactyl\Repositories\Wings\DaemonFileRepository::class);
+    $maxDl = (int) config('filesystems.pmcp_workspace_max_download', 512_000);
+    try {
+        $content = $repo->setServer($server)->getContent($rel, $maxDl > 0 ? $maxDl : null);
+    } catch (\Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException $e) {
+        return response()->json([
+            'message' => 'Lecture Wings impossible.',
+            'detail' => config('app.debug') ? $e->getMessage() : null,
+        ], 502);
+    } catch (\Throwable $e) {
+        try {
+            $content = $repo->setServer($server)->getContent($rel);
+        } catch (\Throwable) {
+            return response()->json([
+                'message' => 'Lecture fichier échouée.',
+                'detail' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    return response()->json(['path' => $rel, 'content' => $content]);
+});
+
+Route::put('/workspace/file', static function (Request $request) use ($resolveServer): JsonResponse {
+    if (! class_exists(\Pterodactyl\Repositories\Wings\DaemonFileRepository::class)) {
+        return response()->json(['message' => 'DaemonFileRepository introuvable.'], 500);
+    }
+
+    $validator = Validator::make($request->all(), [
+        'server' => ['required', 'string', 'max:64'],
+        'path' => ['required', 'string', 'max:512'],
+        'content' => ['required', 'string', 'max:' . (string) ((int) (config('filesystems.pmcp_workspace_max_upload', 400 * 1024)))],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $q = $validator->validated();
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+    $server = $resolveServer($q['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+    $server->loadMissing('subusers');
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_CREATE, $server)) {
+        return response()->json(['message' => 'Permission refusée : écriture fichier.'], 403);
+    }
+
+    try {
+        $rel = \PteroMcPlugins\Services\PmcpWorkspacePath::sanitizeFilePath($q['path']);
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(['message' => $e->getMessage()], $e->status);
+    }
+
+    /** @var \Pterodactyl\Repositories\Wings\DaemonFileRepository $repo */
+    $repo = app(\Pterodactyl\Repositories\Wings\DaemonFileRepository::class);
+    try {
+        $repo->setServer($server)->putContent($rel, (string) $q['content']);
+    } catch (\Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException $e) {
+        return response()->json([
+            'message' => 'Écriture Wings impossible.',
+            'detail' => config('app.debug') ? $e->getMessage() : null,
+        ], 502);
+    } catch (\Throwable $e) {
+        return response()->json([
+            'message' => 'Écriture fichier échouée.',
+            'detail' => config('app.debug') ? $e->getMessage() : null,
+        ], 500);
+    }
+
+    return response()->json(['message' => 'Fichier enregistré.', 'path' => $rel]);
+});
+
+Route::get('/presets', static function (Request $request): JsonResponse {
+    if (! Schema::hasTable('pmcp_presets')) {
+        return response()->json(['items' => [], 'migration_pending' => true]);
+    }
+
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $ownerV = Validator::make($request->query(), ['owner' => ['sometimes', 'nullable', 'string', 'in:self,admin']]);
+    if ($ownerV->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $ownerV->errors()], 422);
+    }
+    $ownerFilter = (string) ($ownerV->validated()['owner'] ?? 'self');
+
+    $uid = (int) $user->id;
+    $qb = DB::table('pmcp_presets')->orderByDesc('updated_at')->limit(100);
+    if (! $user->root_admin || $ownerFilter === 'self') {
+        $qb->where('user_id', $uid);
+    }
+
+    $rows = $qb->get(['id', 'user_id', 'name', 'description', 'items', 'updated_at']);
+    $items = [];
+    foreach ($rows as $r) {
+        $items[] = [
+            'id' => (int) $r->id,
+            'owner_user_id' => (int) $r->user_id,
+            'name' => (string) $r->name,
+            'description' => $r->description !== null ? (string) $r->description : null,
+            'items' => json_decode((string) $r->items, true) ?: [],
+            'updated_at' => $r->updated_at !== null ? (string) $r->updated_at : null,
+        ];
+    }
+
+    return response()->json(['items' => $items]);
+});
+
+Route::post('/presets', static function (Request $request): JsonResponse {
+    if (! Schema::hasTable('pmcp_presets')) {
+        return response()->json(['message' => 'Table presets absente (migrate).'], 503);
+    }
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $validator = Validator::make($request->all(), [
+        'name' => ['required', 'string', 'max:128'],
+        'description' => ['sometimes', 'nullable', 'string', 'max:2000'],
+        'items' => ['required', 'array', 'min:1'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $data = $validator->validated();
+
+    try {
+        $items = \PteroMcPlugins\Services\PmcpPresetItems::coerce($data['items']);
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(['message' => $e->getMessage()], $e->status);
+    }
+
+    $now = now();
+    $payload = [
+        'user_id' => (int) $user->id,
+        'name' => trim((string) $data['name']),
+        'description' => isset($data['description']) && is_string($data['description']) ? trim($data['description']) : null,
+        'items' => json_encode($items),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ];
+
+    try {
+        $id = DB::table('pmcp_presets')->insertGetId($payload);
+    } catch (\Throwable) {
+        return response()->json(['message' => 'Nom de preset déjà utilisé ou erreur BD.'], 422);
+    }
+
+    return response()->json(['message' => 'Preset enregistré.', 'id' => (int) $id]);
+});
+
+Route::delete('/presets', static function (Request $request): JsonResponse {
+    if (! Schema::hasTable('pmcp_presets')) {
+        return response()->json(['message' => 'Table presets absente.'], 503);
+    }
+
+    $validator = Validator::make($request->query(), ['id' => ['required', 'integer', 'min:1']]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+    $id = (int) $validator->validated()['id'];
+    $q = DB::table('pmcp_presets')->where('id', $id);
+    if (! $user->root_admin) {
+        $q->where('user_id', (int) $user->id);
+    }
+    $n = $q->delete();
+
+    return response()->json(['message' => $n > 0 ? 'Preset supprimé.' : 'Preset introuvable.', 'deleted' => $n > 0]);
+});
+
+Route::post('/presets/apply', static function (Request $request) use (
+    $curseForgeApiKey,
+    $curseForgeAuthFailureMessage,
+    $curseForgeCfResponseData,
+    $curseForgeGameIdMc,
+    $curseForgeGet,
+    $defaultInstallDirectoryCurseForge,
+    $normalizeInstallDirectory,
+    $pmcpInstallBlockedByPolicy,
+    $resolveServer,
+    $modrinthGet,
+    $validProjectId,
+    $defaultInstallDirectory
+): JsonResponse {
+    if (! Schema::hasTable('pmcp_presets')) {
+        return response()->json(['message' => 'Table presets absente.'], 503);
+    }
+
+    $validator = Validator::make($request->all(), [
+        'server' => ['required', 'string', 'max:64'],
+        'preset_id' => ['required', 'integer', 'min:1'],
+        'backup_before' => ['sometimes', 'boolean'],
+        'backup_context' => ['sometimes', 'nullable', 'string', Rule::in(['catalog', 'history', 'scheduled', 'preset', 'cron'])],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $data = $validator->validated();
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $preset = DB::table('pmcp_presets')->where('id', (int) $data['preset_id'])->first(['user_id', 'items']);
+    if ($preset === null) {
+        return response()->json(['message' => 'Preset introuvable.'], 404);
+    }
+    if (! $user->root_admin && (int) $preset->user_id !== (int) $user->id) {
+        return response()->json(['message' => 'Preset introuvable.'], 404);
+    }
+
+    $decoded = json_decode((string) $preset->items, true);
+    try {
+        $items = \PteroMcPlugins\Services\PmcpPresetItems::coerce(is_array($decoded) ? $decoded : []);
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(['message' => 'Preset invalide stocké en BD : ' . $e->getMessage()], 422);
+    }
+
+    foreach ($items as $it) {
+        if (($it['provider'] ?? '') === 'curseforge' && $curseForgeApiKey() === null) {
+            return response()->json(['message' => 'CurseForge : clé API absente (nécessaire pour ce preset).'], 503);
+        }
+    }
+
+    $server = $resolveServer($data['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+
+    $server->loadMissing('node', 'subusers');
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+
+    try {
+        $server->validateCurrentState();
+    } catch (\Pterodactyl\Exceptions\Http\Server\ServerStateConflictException) {
+        return response()->json(['message' => 'Le serveur ne permet pas cette action pour le moment.'], 409);
+    }
+
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_CREATE, $server)) {
+        return response()->json(['message' => 'Permission refusée : écriture fichier.'], 403);
+    }
+
+    $wantBackup = (bool) ($data['backup_before'] ?? false);
+    $bc = isset($data['backup_context']) ? trim((string) $data['backup_context']) : 'preset';
+
+    $ok = 0;
+    $errors = [];
+    $idx = 0;
+    foreach ($items as $it) {
+        ++$idx;
+        try {
+            $server->validateCurrentState();
+        } catch (\Pterodactyl\Exceptions\Http\Server\ServerStateConflictException) {
+            $errors[] = 'Item #' . $idx . ' : état serveur conflictuel.';
+            break;
+        }
+
+        try {
+            if ($it['provider'] === 'modrinth') {
+                \PteroMcPlugins\Services\PmcpArtifactInstall::modrinth(
+                    $server,
+                    $user,
+                    $it['project_id'],
+                    $it['version_id'],
+                    $it['directory'],
+                    $wantBackup,
+                    $bc !== '' ? $bc : 'preset',
+                    $modrinthGet,
+                    $validProjectId,
+                    $normalizeInstallDirectory,
+                    $defaultInstallDirectory,
+                    $pmcpInstallBlockedByPolicy,
+                );
+            } else {
+                \PteroMcPlugins\Services\PmcpArtifactInstall::curseforge(
+                    $server,
+                    $user,
+                    (int) $it['project_id'],
+                    (int) $it['version_id'],
+                    $it['directory'],
+                    $wantBackup,
+                    $bc !== '' ? $bc : 'preset',
+                    $curseForgeGameIdMc,
+                    $curseForgeGet,
+                    $curseForgeAuthFailureMessage,
+                    $curseForgeCfResponseData,
+                    $defaultInstallDirectoryCurseForge,
+                    $normalizeInstallDirectory,
+                    $pmcpInstallBlockedByPolicy,
+                );
+            }
+            ++$ok;
+        } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+            $errors[] = 'Item #' . $idx . ' : ' . $e->getMessage();
+        } catch (\Throwable $e) {
+            $errors[] = 'Item #' . $idx . ' : ' . ($e->getMessage() ?: 'erreur');
+        }
+    }
+
+    return response()->json([
+        'message' => $ok === count($items)
+            ? 'Preset appliqué intégralement.'
+            : 'Preset partiellement appliqué (' . $ok . '/' . count($items) . ').',
+        'installed' => $ok,
+        'total' => count($items),
+        'errors' => $errors,
+    ], count($errors) > 0 && $ok === 0 ? 422 : 200);
 });
 
 Route::get('/health', fn () => response()->json([
