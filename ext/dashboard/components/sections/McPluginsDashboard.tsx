@@ -158,6 +158,23 @@ type ScheduleApiPayload = {
     message?: string;
 };
 
+type SchedulePreviewApiResponse = {
+    message?: string;
+    configured: boolean;
+    scheduled_enabled?: boolean;
+    backup_before_update?: boolean;
+    cron_expression?: string;
+    max_updates_per_run?: number;
+    items: Array<{
+        provider: string;
+        project_id: string;
+        current_version_id: string;
+        current_version_label: string | null;
+        directory: string;
+        last_seen_at: string | null;
+    }>;
+};
+
 type UpdateCheckItem = {
     provider: string;
 
@@ -468,6 +485,8 @@ export default function McPluginsDashboard(): React.ReactElement {
     const [scheduleErr, setScheduleErr] = useState<string | null>(null);
     const [scheduleSaveBusy, setScheduleSaveBusy] = useState(false);
     const [scheduleSaveOk, setScheduleSaveOk] = useState<string | null>(null);
+    const [schedulePreviewBusy, setSchedulePreviewBusy] = useState(false);
+    const [schedulePreview, setSchedulePreview] = useState<SchedulePreviewApiResponse | null>(null);
 
     const pinnedForSelectedProject = useMemo((): PinApiItem | undefined => {
         if (!selectedProjectId) return undefined;
@@ -668,6 +687,27 @@ export default function McPluginsDashboard(): React.ReactElement {
         }
     }, [serverId, scheduleCfg]);
 
+    const runSchedulePreview = useCallback(async (): Promise<void> => {
+        if (!serverId) return;
+        setSchedulePreviewBusy(true);
+        setScheduleErr(null);
+        setSchedulePreview(null);
+        try {
+            const out = await postJson<SchedulePreviewApiResponse>(`${EXT_BASE}/schedule/preview`, {
+                server: serverId,
+            });
+            setSchedulePreview(out);
+            if (out.message) {
+                setScheduleSaveOk(out.message);
+            }
+        } catch (e: unknown) {
+            setScheduleErr(e instanceof Error ? e.message : 'Aperçu de planification impossible');
+            setSchedulePreview(null);
+        } finally {
+            setSchedulePreviewBusy(false);
+        }
+    }, [serverId]);
+
     useEffect(() => {
         let cancel = false;
         if (!serverId) {
@@ -690,6 +730,7 @@ export default function McPluginsDashboard(): React.ReactElement {
             setScheduleCfg(null);
             setScheduleErr(null);
             setScheduleSaveOk(null);
+            setSchedulePreview(null);
             return undefined;
         }
         loadInstallHistory().catch(() => {
@@ -1150,8 +1191,44 @@ export default function McPluginsDashboard(): React.ReactElement {
                                 >
                                     {scheduleSaveBusy ? 'Enregistrement…' : 'Enregistrer planification'}
                                 </button>
+                                <button
+                                    type="button"
+                                    disabled={schedulePreviewBusy}
+                                    onClick={() => void runSchedulePreview()}
+                                    style={{
+                                        padding: '7px 12px',
+                                        borderRadius: '4px',
+                                        border: '1px solid rgba(251,191,36,0.55)',
+                                        background: 'rgba(251,191,36,0.16)',
+                                        color: 'inherit',
+                                        cursor: schedulePreviewBusy ? 'wait' : 'pointer',
+                                        fontSize: '0.74rem',
+                                    }}
+                                >
+                                    {schedulePreviewBusy ? 'Aperçu…' : 'Aperçu de passe'}
+                                </button>
                             </div>
                             {scheduleSaveOk && <p style={{ fontSize: '0.75rem', color: '#86efac' }}>{scheduleSaveOk}</p>}
+                            {schedulePreview && (
+                                <div style={{ marginTop: '8px', fontSize: '0.72rem', opacity: 0.85 }}>
+                                    <p style={{ marginBottom: '5px' }}>
+                                        Candidats prochaine passe : <strong>{schedulePreview.items.length}</strong>
+                                    </p>
+                                    {schedulePreview.items.length > 0 ? (
+                                        <ul style={{ margin: 0, paddingLeft: '16px' }}>
+                                            {schedulePreview.items.map((it) => (
+                                                <li key={`${it.provider}:${it.project_id}`} style={{ marginBottom: '2px' }}>
+                                                    <code>{it.provider}:{it.project_id}</code> →{' '}
+                                                    <code>{it.current_version_label || it.current_version_id}</code> (
+                                                    <code>{it.directory}</code>)
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    ) : (
+                                        <p style={{ margin: 0, opacity: 0.7 }}>Aucun candidat trouvé dans l’historique.</p>
+                                    )}
+                                </div>
+                            )}
                             <p style={{ fontSize: '0.68rem', opacity: 0.6 }}>
                                 Ce bloc configure la planification ; l’exécution cron/queue globale est branchée côté panel.
                             </p>

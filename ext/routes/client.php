@@ -25,7 +25,7 @@ use Illuminate\Support\Facades\Validator;
  */
 $pmcpExtensionVersion = '{version}';
 if (! is_string($pmcpExtensionVersion) || $pmcpExtensionVersion === '' || $pmcpExtensionVersion === '{version}') {
-    $pmcpExtensionVersion = '0.7.1-dev';
+    $pmcpExtensionVersion = '0.7.2-dev';
 }
 
 $modrinthBase = 'https://api.modrinth.com/v2';
@@ -1341,6 +1341,95 @@ Route::post('/schedule', static function (Request $request) use ($resolveServer,
         'backup_before_update' => (bool) $payload['backup_before_update'],
         'cron_expression' => (string) $payload['cron_expression'],
         'max_updates_per_run' => (int) $payload['max_updates_per_run'],
+    ]);
+});
+
+Route::post('/schedule/preview', static function (Request $request) use ($resolveServer): JsonResponse {
+    if (! Schema::hasTable('pmcp_server_schedules')) {
+        return response()->json(['message' => 'Migration base schedule non appliquée.'], 503);
+    }
+    if (! Schema::hasTable('pmcp_install_events')) {
+        return response()->json(['message' => 'Historique installations indisponible (migration manquante).'], 503);
+    }
+
+    $validator = Validator::make($request->all(), [
+        'server' => ['required', 'string', 'max:64'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+    $data = $validator->validated();
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $server = $resolveServer($data['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+    $server->loadMissing('subusers');
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_READ, $server)) {
+        return response()->json(['message' => 'Permission refusée.'], 403);
+    }
+
+    $cfg = DB::table('pmcp_server_schedules')->where('server_id', $server->id)->first([
+        'id',
+        'scheduled_enabled',
+        'backup_before_update',
+        'cron_expression',
+        'max_updates_per_run',
+    ]);
+
+    if (! $cfg) {
+        return response()->json([
+            'message' => 'Aucune planification configurée pour ce serveur.',
+            'configured' => false,
+            'items' => [],
+        ]);
+    }
+
+    $max = max(1, min(50, (int) $cfg->max_updates_per_run));
+    $rows = DB::table('pmcp_install_events')
+        ->where('server_id', $server->id)
+        ->orderByDesc('created_at')
+        ->limit(250)
+        ->get(['provider', 'project_id', 'version_id', 'version_label', 'directory', 'created_at']);
+
+    $seen = [];
+    $items = [];
+    foreach ($rows as $r) {
+        $k = (string) $r->provider . ':' . (string) $r->project_id . ':' . (string) $r->directory;
+        if (isset($seen[$k])) {
+            continue;
+        }
+        $seen[$k] = true;
+        $items[] = [
+            'provider' => (string) $r->provider,
+            'project_id' => (string) $r->project_id,
+            'current_version_id' => (string) $r->version_id,
+            'current_version_label' => $r->version_label !== null ? (string) $r->version_label : null,
+            'directory' => (string) $r->directory,
+            'last_seen_at' => $r->created_at !== null ? (string) $r->created_at : null,
+        ];
+        if (count($items) >= $max) {
+            break;
+        }
+    }
+
+    return response()->json([
+        'message' => 'Aperçu de la prochaine passe planifiée.',
+        'configured' => true,
+        'scheduled_enabled' => (bool) $cfg->scheduled_enabled,
+        'backup_before_update' => (bool) $cfg->backup_before_update,
+        'cron_expression' => (string) $cfg->cron_expression,
+        'max_updates_per_run' => $max,
+        'items' => $items,
     ]);
 });
 
