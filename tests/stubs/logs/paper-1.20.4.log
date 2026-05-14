@@ -1,0 +1,7 @@
+[12:34:56 INFO]: Environment: authHost='https://authserver.mojang.com'
+[12:34:56 INFO]: Loaded 7 recipes
+[12:34:56 INFO]: Starting minecraft server version 1.20.4
+[12:34:56 INFO]: Loading properties
+[12:34:56 INFO]: This server is running Paper version git-Paper-435 (MC: 1.20.4) (Implementing API version 1.20.4-R0.1-SNAPSHOT)
+[12:34:56 INFO]: Server Ping Player Sample Count: 12
+[12:34:56 INFO]: Done (5.123s)! For help, type "help"

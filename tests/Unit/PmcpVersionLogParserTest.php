@@ -22,3 +22,12 @@ test('parse banner Vanilla 1.20.1 → loader=vanilla', function (): void {
         ->and($result['loader'])->toBe('vanilla')
         ->and($result['source_line'])->toContain('Starting minecraft server version 1.20.1');
 });
+
+test('parse banner Paper 1.20.4 → loader=paper (priorité sur vanilla)', function (): void {
+    $result = PmcpVersionLogParser::parse(pmcpFixture('paper-1.20.4.log'));
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.20.4')
+        ->and($result['loader'])->toBe('paper')
+        ->and($result['source_line'])->toContain('Paper version');
+});
