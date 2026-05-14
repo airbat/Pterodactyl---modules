@@ -31,6 +31,14 @@ final class PmcpVersionLogParser
             ];
         }
 
+        if (preg_match('/This server is running CraftBukkit version [^(]*\(MC: (\S+?)\)/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
+            return [
+                'mc_version' => $m[1][0],
+                'loader' => 'spigot',
+                'source_line' => self::lineAtOffset($buffer, $m[0][1]),
+            ];
+        }
+
         if (preg_match('/^(?:\[[^\]]*\][\s:]*|[\s:])*Starting minecraft server version (\S+)/mi', $buffer, $m, PREG_OFFSET_CAPTURE)) {
             return [
                 'mc_version' => $m[1][0],

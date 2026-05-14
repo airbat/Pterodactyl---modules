@@ -31,3 +31,12 @@ test('parse banner Paper 1.20.4 → loader=paper (priorité sur vanilla)', funct
         ->and($result['loader'])->toBe('paper')
         ->and($result['source_line'])->toContain('Paper version');
 });
+
+test('parse banner Spigot 1.20.1 → loader=spigot (priorité sur vanilla)', function (): void {
+    $result = PmcpVersionLogParser::parse(pmcpFixture('spigot-1.20.1.log'));
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.20.1')
+        ->and($result['loader'])->toBe('spigot')
+        ->and($result['source_line'])->toContain('CraftBukkit version');
+});
