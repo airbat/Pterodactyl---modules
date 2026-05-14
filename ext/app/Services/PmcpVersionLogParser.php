@@ -39,6 +39,23 @@ final class PmcpVersionLogParser
             ];
         }
 
+        // Quilt avant Fabric : un log Quilt peut aussi mentionner Fabric (fork-compatible).
+        if (preg_match('/Loading Minecraft (\S+) with Quilt Loader/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
+            return [
+                'mc_version' => $m[1][0],
+                'loader' => 'quilt',
+                'source_line' => self::lineAtOffset($buffer, $m[0][1]),
+            ];
+        }
+
+        if (preg_match('/Loading Minecraft (\S+) with Fabric Loader/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
+            return [
+                'mc_version' => $m[1][0],
+                'loader' => 'fabric',
+                'source_line' => self::lineAtOffset($buffer, $m[0][1]),
+            ];
+        }
+
         if (preg_match('/^(?:\[[^\]]*\][\s:]*|[\s:])*Starting minecraft server version (\S+)/mi', $buffer, $m, PREG_OFFSET_CAPTURE)) {
             return [
                 'mc_version' => $m[1][0],

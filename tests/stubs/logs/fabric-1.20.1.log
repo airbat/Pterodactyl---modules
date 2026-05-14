@@ -1,0 +1,8 @@
+[12:34:56] [main/INFO] (FabricLoader): Loading 24 mods:
+	- fabric-api 0.83.0+1.20.1
+	- fabricloader 0.14.21
+	- java 17
+	- minecraft 1.20.1
+[12:34:56] [main/INFO] (Minecraft): Loading Minecraft 1.20.1 with Fabric Loader 0.14.21
+[12:34:56] [main/INFO] (Minecraft): Building unoptimized datafixer
+[12:34:56] [Server thread/INFO] (Minecraft): Starting minecraft server version 1.20.1
