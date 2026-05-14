@@ -1,0 +1,5 @@
+[12:34:56] [main/INFO] [ne.ne.fm.lo.FMLLoader/CORE]: NeoForge mod loading service
+[12:34:56] [main/INFO] [ne.ne.fm.lo.FMLLoader/CORE]: Loading immediate reference 0.7
+[12:34:56] [main/INFO] [STDOUT/]: [com.mojang.logging.LogUtils:lambda$prefix$2:120]: NeoForge 21.0.143
+[12:34:56] [Server thread/INFO]: Starting minecraft server version 1.21
+[12:34:56] [Server thread/INFO]: Loading properties

@@ -58,3 +58,21 @@ test('parse banner Quilt 1.20.1 → loader=quilt', function (): void {
         ->and($result['loader'])->toBe('quilt')
         ->and($result['source_line'])->toContain('Quilt Loader');
 });
+
+test('parse banner NeoForge 1.21 → loader=neoforge (combine deux signaux)', function (): void {
+    $result = PmcpVersionLogParser::parse(pmcpFixture('neoforge-1.21.log'));
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.21')
+        ->and($result['loader'])->toBe('neoforge')
+        ->and($result['source_line'])->toContain('NeoForge mod loading');
+});
+
+test('parse banner Forge 1.20.1 → loader=forge (combine deux signaux)', function (): void {
+    $result = PmcpVersionLogParser::parse(pmcpFixture('forge-1.20.1.log'));
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.20.1')
+        ->and($result['loader'])->toBe('forge')
+        ->and($result['source_line'])->toContain('Forge mod loading');
+});

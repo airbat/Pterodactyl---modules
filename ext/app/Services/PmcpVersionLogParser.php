@@ -31,6 +31,31 @@ final class PmcpVersionLogParser
             ];
         }
 
+        // NeoForge avant Forge : "Forge mod loading service" est un substring de "NeoForge mod
+        // loading service". L'ordre rend `source_line` correct ; la lookbehind sur Forge fait
+        // une seconde barrière pour éviter le faux match si l'ordre venait à changer.
+        if (preg_match('/NeoForge mod loading service/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
+            $loaderLine = self::lineAtOffset($buffer, $m[0][1]);
+            if (preg_match('/Starting minecraft server version (\S+)/i', $buffer, $v)) {
+                return [
+                    'mc_version' => $v[1],
+                    'loader' => 'neoforge',
+                    'source_line' => $loaderLine,
+                ];
+            }
+        }
+
+        if (preg_match('/(?<!Neo)Forge mod loading service/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
+            $loaderLine = self::lineAtOffset($buffer, $m[0][1]);
+            if (preg_match('/Starting minecraft server version (\S+)/i', $buffer, $v)) {
+                return [
+                    'mc_version' => $v[1],
+                    'loader' => 'forge',
+                    'source_line' => $loaderLine,
+                ];
+            }
+        }
+
         if (preg_match('/This server is running CraftBukkit version [^(]*\(MC: (\S+?)\)/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
             return [
                 'mc_version' => $m[1][0],
