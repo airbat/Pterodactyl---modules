@@ -81,6 +81,17 @@ final class PmcpVersionLogParser
             ];
         }
 
+        // Bedrock écrit "Version: X.Y.Z.W" peu après "Starting Server". On exige les deux signaux
+        // pour éviter de matcher la sortie de "/version" envoyée par un opérateur dans un chat.
+        if (preg_match('/Starting Server/i', $buffer)
+            && preg_match('/^\[[^\]]+INFO\]\s+Version:\s+(\d+\.\d+\.\d+(?:\.\d+)?)/mi', $buffer, $m, PREG_OFFSET_CAPTURE)) {
+            return [
+                'mc_version' => $m[1][0],
+                'loader' => 'bedrock',
+                'source_line' => self::lineAtOffset($buffer, $m[0][1]),
+            ];
+        }
+
         if (preg_match('/^(?:\[[^\]]*\][\s:]*|[\s:])*Starting minecraft server version (\S+)/mi', $buffer, $m, PREG_OFFSET_CAPTURE)) {
             return [
                 'mc_version' => $m[1][0],

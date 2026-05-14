@@ -76,3 +76,28 @@ test('parse banner Forge 1.20.1 → loader=forge (combine deux signaux)', functi
         ->and($result['loader'])->toBe('forge')
         ->and($result['source_line'])->toContain('Forge mod loading');
 });
+
+test('parse banner Bedrock 1.21 → loader=bedrock', function (): void {
+    $result = PmcpVersionLogParser::parse(pmcpFixture('bedrock-1.21.log'));
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.21.30.03')
+        ->and($result['loader'])->toBe('bedrock')
+        ->and($result['source_line'])->toContain('Version:');
+});
+
+test('retourne null sur buffer vide', function (): void {
+    expect(PmcpVersionLogParser::parse(''))->toBeNull();
+});
+
+test('retourne null sur buffer sans signal connu', function (): void {
+    $buffer = "[INFO]: Done loading something\n[INFO]: Server ready.\n";
+    expect(PmcpVersionLogParser::parse($buffer))->toBeNull();
+});
+
+test('ignore les lignes de chat qui mentionnent "minecraft server version"', function (): void {
+    /* La ligne canonique commence par "Starting minecraft server version" — un message de chat
+       qui contient ce wording entouré d'un marqueur <user> ne doit pas matcher. */
+    $buffer = "[INFO]: <user> says: starting minecraft server version is annoying\n";
+    expect(PmcpVersionLogParser::parse($buffer))->toBeNull();
+});
