@@ -34,26 +34,14 @@ final class PmcpVersionLogParser
         // NeoForge avant Forge : "Forge mod loading service" est un substring de "NeoForge mod
         // loading service". L'ordre rend `source_line` correct ; la lookbehind sur Forge fait
         // une seconde barrière pour éviter le faux match si l'ordre venait à changer.
-        if (preg_match('/NeoForge mod loading service/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
-            $loaderLine = self::lineAtOffset($buffer, $m[0][1]);
-            if (preg_match('/Starting minecraft server version (\S+)/i', $buffer, $v)) {
-                return [
-                    'mc_version' => $v[1],
-                    'loader' => 'neoforge',
-                    'source_line' => $loaderLine,
-                ];
-            }
+        $forgeFamily = self::matchForgeFamily($buffer, '/NeoForge mod loading service/i', 'neoforge');
+        if ($forgeFamily !== null) {
+            return $forgeFamily;
         }
 
-        if (preg_match('/(?<!Neo)Forge mod loading service/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
-            $loaderLine = self::lineAtOffset($buffer, $m[0][1]);
-            if (preg_match('/Starting minecraft server version (\S+)/i', $buffer, $v)) {
-                return [
-                    'mc_version' => $v[1],
-                    'loader' => 'forge',
-                    'source_line' => $loaderLine,
-                ];
-            }
+        $forgeFamily = self::matchForgeFamily($buffer, '/(?<!Neo)Forge mod loading service/i', 'forge');
+        if ($forgeFamily !== null) {
+            return $forgeFamily;
         }
 
         if (preg_match('/This server is running CraftBukkit version [^(]*\(MC: (\S+?)\)/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
@@ -101,6 +89,37 @@ final class PmcpVersionLogParser
         }
 
         return null;
+    }
+
+    /**
+     * Marqueur loader Forge/NeoForge puis version MC : la version doit apparaître **après** le
+     * marqueur (offset du match "Starting minecraft server version" >= offset du loader) pour
+     * éviter d'associer un extrait de log ancien concaténé au buffer.
+     *
+     * @return array{mc_version: string, loader: string, source_line: string}|null
+     */
+    private static function matchForgeFamily(string $buffer, string $markerPattern, string $loaderKey): ?array
+    {
+        if (preg_match($markerPattern, $buffer, $m, PREG_OFFSET_CAPTURE) !== 1) {
+            return null;
+        }
+
+        $loaderOffset = $m[0][1];
+        $loaderLine = self::lineAtOffset($buffer, $loaderOffset);
+
+        if (preg_match('/Starting minecraft server version (\S+)/i', $buffer, $v, PREG_OFFSET_CAPTURE, $loaderOffset) !== 1) {
+            return null;
+        }
+
+        if ($v[0][1] < $loaderOffset) {
+            return null;
+        }
+
+        return [
+            'mc_version' => $v[1][0],
+            'loader' => $loaderKey,
+            'source_line' => $loaderLine,
+        ];
     }
 
     private static function lineAtOffset(string $buffer, int $offset): string

@@ -68,6 +68,23 @@ test('parse banner NeoForge 1.21 → loader=neoforge (combine deux signaux)', fu
         ->and($result['source_line'])->toContain('NeoForge mod loading');
 });
 
+test('NeoForge : version MC après le marqueur loader (ignore extrait ancien avant)', function (): void {
+    $buffer = <<<'LOG'
+=== ANCIEN EXTRAIT ===
+[12:00:00 INFO]: Starting minecraft server version 9.99.99
+=== FIN ANCIEN ===
+[12:34:56] [main/INFO] [ne.ne.fm.lo.FMLLoader/CORE]: NeoForge mod loading service
+[12:34:56] [Server thread/INFO]: Starting minecraft server version 1.21
+LOG;
+
+    $result = PmcpVersionLogParser::parse($buffer);
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.21')
+        ->and($result['loader'])->toBe('neoforge')
+        ->and($result['source_line'])->toContain('NeoForge mod loading');
+});
+
 test('parse banner Forge 1.20.1 → loader=forge (combine deux signaux)', function (): void {
     $result = PmcpVersionLogParser::parse(pmcpFixture('forge-1.20.1.log'));
 
