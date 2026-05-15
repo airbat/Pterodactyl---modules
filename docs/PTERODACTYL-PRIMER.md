@@ -75,7 +75,21 @@ Après restart, suivre websocket console pour anomalies classiques classpath For
 
 ### Streams diagnostic
 
-Pour heuristiques crash post mise à jour, capter derniers évènements lignes erreur Forge « Mixin » ou Paper « Plugin … failed**.
+Pour heuristiques crash post mise à jour, capter derniers évènements lignes erreur Forge « Mixin » ou Paper « Plugin … failed».
+
+## Contexte serveur et version Minecraft
+
+L’UI catalogue consomme **GET** `/api/client/extensions/pteromcplugins/server/context?server={uuid}` (détail du payload dans `docs/ARCHITECTURE.md` § « Contexte Minecraft »). Le handler délègue à `ServerMcContextBuilder`, qui déduit `minecraft_versions_hint` depuis les variables d’œuf fusionnées et le startup (placeholders `{{ … }}` résolus ou non).
+
+### Détection runtime (probe via logs)
+
+Quand `ServerMcContextBuilder` ne déduit pas de version depuis les variables d'œuf (œuf custom, placeholders non résolus, etc.), le module expose une route runtime :
+
+- `GET /api/client/extensions/pteromcplugins/server/probe-mc-version?server={uuid}`
+- Lit `/logs/latest.log` du serveur via `DaemonFileRepository` (≤ 512 Ko).
+- Délègue à `PmcpVersionLogParser` qui reconnaît les banners de démarrage Paper, Spigot, Forge, NeoForge, Fabric, Quilt, Vanilla, Bedrock.
+- Permission requise : `file.read`.
+- Limites : nécessite que le serveur ait démarré au moins une fois ; ne marche pas si `logs/latest.log` est absent ou si le banner n'est pas reconnu.
 
 ## Permissions Panel proposées
 
