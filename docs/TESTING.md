@@ -22,6 +22,7 @@ Cibles prioritaires **avant merges logique**:
 
 | Zone | Pourquoi |
 |------|-----------|
+| `PmcpVersionLogParser` + fixtures `tests/stubs/logs/*.log` | Bannières de démarrage (Java + Bedrock), normalisation ANSI/BOM ; **zéro I/O** — `tests/Unit/PmcpVersionLogParserTest.php` |
 | `McVersionComparator` futur service | quirks snapshots pre/rc |
 | `DependencyGraphResolver` | cycles optionnels soft fails |
 | Mappers providers Modrinth/CurseForge | golden files snapshot |

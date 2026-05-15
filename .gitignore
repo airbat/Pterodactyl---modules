@@ -35,3 +35,6 @@ Thumbs.db
 
 # graphify
 graphify-out/
+
+# rtk
+.sandbox-rtk-data/

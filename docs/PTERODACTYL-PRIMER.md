@@ -83,13 +83,22 @@ L’UI catalogue consomme **GET** `/api/client/extensions/pteromcplugins/server/
 
 ### Détection runtime (probe via logs)
 
-Quand `ServerMcContextBuilder` ne déduit pas de version depuis les variables d'œuf (œuf custom, placeholders non résolus, etc.), le module expose une route runtime :
+Quand `ServerMcContextBuilder` ne déduit pas de version depuis les variables d'œuf (œuf custom, placeholders non résolus, etc.), le module expose une route **synchrone** qui lit un fichier de log côté Wings :
 
-- `GET /api/client/extensions/pteromcplugins/server/probe-mc-version?server={uuid}`
-- Lit `/logs/latest.log` du serveur via `DaemonFileRepository` (≤ 512 Ko).
-- Délègue à `PmcpVersionLogParser` qui reconnaît les banners de démarrage Paper, Spigot, Forge, NeoForge, Fabric, Quilt, Vanilla, Bedrock.
-- Permission requise : `file.read`.
-- Limites : nécessite que le serveur ait démarré au moins une fois ; ne marche pas si `logs/latest.log` est absent ou si le banner n'est pas reconnu.
+- **Route** : `GET /api/client/extensions/pteromcplugins/server/probe-mc-version?server={uuid}`
+- **Handler** : `ext/routes/client.php` → `PteroMcPlugins\Services\PmcpRuntimeVersionProbe::probe($server)`
+- **Lecture Wings** : `DaemonFileRepository::getContent($path, 512_000)` (≤ 512 Ko du début du fichier).
+- **Chemins tentés** (liste fermée, ordre fixe ; pas d’input utilisateur → pas de path traversal) : `/logs/latest.log`, `/Logs/latest.log`, `logs/latest.log`, `Logs/latest.log`. Si Wings renvoie **404** pour un chemin, le suivant est essayé. Tous vides ou absents → **404** avec `tried_paths` dans le JSON.
+- **Parser** : `PmcpVersionLogParser::parse()` — pur, sans I/O. Avant les regex : retrait **BOM UTF-8** et **séquences ANSI** (CSI / OSC). Loaders reconnus : **paper**, **spigot** (CraftBukkit), **neoforge**, **forge**, **quilt**, **fabric**, **bedrock**, **vanilla**. Paper / Spigot : motif tolérant du texte (y compris `(Implementing API …)`) entre le marqueur `Paper version` / `CraftBukkit version` et la première occurrence **`(MC: …)`**. Bedrock : présence de **`Starting Server`** puis une ligne du type **`[…] Version: x.y.z.w`** (timestamp étendu).
+- **Réponse JSON succès** : `{ mc_version, loader, source_line, source: "latest_log" }`.
+- **Permission** : `ACTION_FILE_READ` (message 403 explicite si refusé).
+- **Erreurs HTTP** (champ `message` + éventuellement `detail` si `APP_DEBUG`, `wings_status` pour les erreurs Wings mappées) :
+  - **404** : aucun fichier candidat utilisable, ou chemin inexistant côté daemon après les essais.
+  - **403** : Wings refuse la lecture (politique nœud / daemon).
+  - **422** : fichier lu mais aucun banner reconnu, ou fichier trop volumineux pour la limite (512 Ko).
+  - **502** : erreur **5xx** Wings lors de la lecture, ou nœud injoignable sans code HTTP exploitable (message générique dans ce dernier cas).
+- **UI** : bouton dans `ext/dashboard/components/sections/McPluginsDashboard.tsx` (bloc sans `minecraft_versions_hint`) ; appelle la route via `fetchJson` et met à jour le filtre catalogue (`minecraft_versions_hint` équivalent côté filtre).
+- **Limites** : le serveur doit avoir produit au moins une fois un `latest.log` dans l’un des emplacements ci-dessus ; pas de fallback WebSocket ni commande `version` en v1.0 (voir `docs/superpowers/plans/2026-05-15-runtime-mc-version-probe.md`).
 
 ## Permissions Panel proposées
 

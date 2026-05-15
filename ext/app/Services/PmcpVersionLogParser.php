@@ -23,7 +23,12 @@ final class PmcpVersionLogParser
             return null;
         }
 
-        if (preg_match('/This server is running Paper version [^(]*\(MC: (\S+?)\)/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
+        $buffer = self::normalizeLogBuffer($buffer);
+
+        // Paper : ne pas utiliser « [^(]* » avant « (MC: » — plusieurs builds insèrent
+        // « (Implementing API version …) » avant « (MC: …) », ce qui casse l’ancre stricte.
+        // Autoriser du texte/retours ligne entre « Paper version » et le premier « (MC: …) ».
+        if (preg_match('/\bPaper version\b[\s\S]{0,1200}?\(MC:\s*(\S+?)\)/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
             return [
                 'mc_version' => $m[1][0],
                 'loader' => 'paper',
@@ -44,7 +49,7 @@ final class PmcpVersionLogParser
             return $forgeFamily;
         }
 
-        if (preg_match('/This server is running CraftBukkit version [^(]*\(MC: (\S+?)\)/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
+        if (preg_match('/\bCraftBukkit version\b[\s\S]{0,1200}?\(MC:\s*(\S+?)\)/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
             return [
                 'mc_version' => $m[1][0],
                 'loader' => 'spigot',
@@ -69,10 +74,10 @@ final class PmcpVersionLogParser
             ];
         }
 
-        // Bedrock écrit "Version: X.Y.Z.W" peu après "Starting Server". On exige les deux signaux
-        // pour éviter de matcher la sortie de "/version" envoyée par un opérateur dans un chat.
+        // Bedrock : « Starting Server » puis une ligne « … Version: a.b.c.d » (timestamp étendu ou [INFO] seul).
+        // Évite les faux positifs chat en exigeant les deux signaux.
         if (preg_match('/Starting Server/i', $buffer)
-            && preg_match('/^\[[^\]]+INFO\]\s+Version:\s+(\d+\.\d+\.\d+(?:\.\d+)?)/mi', $buffer, $m, PREG_OFFSET_CAPTURE)) {
+            && preg_match('/^\[[^\]]*\]\s+Version:\s*(\d+\.\d+\.\d+(?:\.\d+)?)/mi', $buffer, $m, PREG_OFFSET_CAPTURE)) {
             return [
                 'mc_version' => $m[1][0],
                 'loader' => 'bedrock',
@@ -130,5 +135,19 @@ final class PmcpVersionLogParser
         $end = $end === false ? strlen($buffer) : $end;
 
         return trim(substr($buffer, $start, $end - $start));
+    }
+
+    /** Supprime BOM UTF-8 et séquences ANSI (couleurs Paper / conteneur) qui empêchent les regex. */
+    private static function normalizeLogBuffer(string $buffer): string
+    {
+        if (str_starts_with($buffer, "\xEF\xBB\xBF")) {
+            $buffer = substr($buffer, 3);
+        }
+
+        $out = preg_replace('/\x1b\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]/', '', $buffer);
+        $out = is_string($out) ? $out : $buffer;
+        $out2 = preg_replace('/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)/', '', $out);
+
+        return is_string($out2) ? $out2 : $out;
     }
 }

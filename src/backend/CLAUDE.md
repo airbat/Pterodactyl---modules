@@ -177,7 +177,7 @@ Jobs prévus (à créer dans `src/backend/Jobs/`) :
 
 ## Lecture de logs serveur
 
-Pour toute lecture de log de démarrage MC, **toujours** passer par `\Pterodactyl\Repositories\Wings\DaemonFileRepository::getContent($path, $maxBytes)`. Ne JAMAIS hardcoder un path utilisateur — utiliser un chemin fixe (ex. `/logs/latest.log`). Pour des lectures plus larges, passer par `PmcpWorkspacePath::sanitizeFilePath()` qui valide l'absence de traversal.
+Pour toute lecture de log de démarrage MC, **toujours** passer par `\Pterodactyl\Repositories\Wings\DaemonFileRepository::getContent($path, $maxBytes)`. Ne jamais construire un chemin à partir d’une entrée utilisateur brute : soit une **liste fermée** de chemins relatifs (comme `PmcpRuntimeVersionProbe` : `logs/latest.log` et `Logs/latest.log`, avec ou sans `/` initial), soit un chemin validé par `PmcpWorkspacePath::sanitizeFilePath()` pour les parcours élargis.
 
 ## Error handling
 

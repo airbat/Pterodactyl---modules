@@ -32,6 +32,23 @@ test('parse banner Paper 1.20.4 → loader=paper (priorité sur vanilla)', funct
         ->and($result['source_line'])->toContain('Paper version');
 });
 
+test('Paper : (Implementing API …) avant (MC: …) sur la même ligne → loader=paper', function (): void {
+    $result = PmcpVersionLogParser::parse(pmcpFixture('paper-1.21-implementing-first.log'));
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.21.4')
+        ->and($result['loader'])->toBe('paper');
+});
+
+test('Paper : séquences ANSI retirées avant parsing', function (): void {
+    $buffer = "[12:34:56 INFO]: \x1b[0;32mThis server is running Paper version git-Paper-1 (MC: 1.20.6)\x1b[0m\n";
+    $result = PmcpVersionLogParser::parse($buffer);
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.20.6')
+        ->and($result['loader'])->toBe('paper');
+});
+
 test('parse banner Spigot 1.20.1 → loader=spigot (priorité sur vanilla)', function (): void {
     $result = PmcpVersionLogParser::parse(pmcpFixture('spigot-1.20.1.log'));
 
@@ -101,6 +118,14 @@ test('parse banner Bedrock 1.21 → loader=bedrock', function (): void {
         ->and($result['mc_version'])->toBe('1.21.30.03')
         ->and($result['loader'])->toBe('bedrock')
         ->and($result['source_line'])->toContain('Version:');
+});
+
+test('parse banner Bedrock format [INFO] court → loader=bedrock', function (): void {
+    $result = PmcpVersionLogParser::parse(pmcpFixture('bedrock-minimal-brackets.log'));
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.21.30.04')
+        ->and($result['loader'])->toBe('bedrock');
 });
 
 test('retourne null sur buffer vide', function (): void {

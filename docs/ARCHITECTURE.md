@@ -218,6 +218,14 @@ Le handler délègue la construction du payload à `PteroMcPlugins\Services\Serv
 
 Les indices proviennent de : **variables fusionnées** (valeur instance + repli sur `default_value` des variables œuf), puis **startup** après substitution des placeholders, avec motifs additionnels sur la « haystack » (URLs, noms de jars).
 
+### Sonde runtime (`server/probe-mc-version`)
+
+Complément **opt-in** (bouton UI) lorsque les hints ci-dessus sont insuffisants :
+
+- **Route** : **GET** `…/server/probe-mc-version?server={uuid}` (même préfixe d’extension que `server/context`, déclaré dans `ext/routes/client.php`).
+- **Comportement** : lecture d’un fichier `latest.log` via Wings (`PmcpRuntimeVersionProbe`), parsing par `PmcpVersionLogParser` (bannières de démarrage Java + Bedrock). Détails (chemins candidats, codes HTTP, champs JSON) : `docs/PTERODACTYL-PRIMER.md` § « Détection runtime ».
+- **Différence avec `server/context`** : la sonde **appelle Wings** et nécessite la permission lecture fichiers ; le contexte serveur reste **sans I/O Wings**.
+
 ### Tests
 
 La logique du builder est couverte par des tests Pest standalone (`composer test`), avec un stub `Pterodactyl\Models\Server` sous `tests/stubs/` — le panel réel fournit le modèle Eloquent en production.
