@@ -45,6 +45,13 @@ type CatalogResponse = {
     items: CatalogHit[];
 };
 
+type ProbeVersionResponse = {
+    mc_version: string;
+    loader: string;
+    source_line: string;
+    source: string;
+};
+
 type ModrinthProjectDetail = {
     id: string;
     slug: string;
@@ -262,7 +269,9 @@ type UpdatesCheckApiResponse = {
 
 const box: React.CSSProperties = {
     padding: '1rem',
-    maxWidth: '960px',
+    maxWidth: '1200px',
+    marginLeft: 'auto',
+    marginRight: 'auto',
     marginBottom: '1rem',
 };
 
@@ -651,6 +660,9 @@ export default function McPluginsDashboard(): React.ReactElement {
 
     const [minecraftVersionFilter, setMinecraftVersionFilter] = useState('');
     const [serverCtx, setServerCtx] = useState<ServerContextPayload | null>(null);
+    const [probeLoading, setProbeLoading] = useState<boolean>(false);
+    const [probeError, setProbeError] = useState<string | null>(null);
+    const [probeResult, setProbeResult] = useState<ProbeVersionResponse | null>(null);
     const [ctxErr, setCtxErr] = useState<string | null>(null);
 
     const [pinsByKey, setPinsByKey] = useState<Record<string, PinApiItem>>({});
@@ -788,6 +800,26 @@ export default function McPluginsDashboard(): React.ReactElement {
             setInstallHistoryLoading(false);
         }
     }, [serverId, loadPins, runUpdateCheck]);
+
+    const handleProbeVersion = useCallback(async (): Promise<void> => {
+        if (!serverId) {
+            return;
+        }
+        setProbeLoading(true);
+        setProbeError(null);
+        try {
+            const data = await fetchJson<ProbeVersionResponse>(
+                `${EXT_BASE}/server/probe-mc-version?${new URLSearchParams({ server: serverId }).toString()}`,
+            );
+            setProbeResult(data);
+            setMinecraftVersionFilter(data.mc_version);
+        } catch (err) {
+            setProbeError(err instanceof Error ? err.message : 'Erreur inconnue lors de la sonde version.');
+            setProbeResult(null);
+        } finally {
+            setProbeLoading(false);
+        }
+    }, [serverId]);
 
     const installHistoryVersion = useCallback(
         async (
@@ -1403,6 +1435,33 @@ export default function McPluginsDashboard(): React.ReactElement {
         ? detailProject.body.slice(0, 1200) + (detailProject.body.length > 1200 ? '\n…' : '')
         : '';
 
+    const renderProbeControls = (buttonLabel: string): React.ReactNode => (
+        <div style={{ marginTop: '0.5rem', display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+            <button
+                type="button"
+                onClick={handleProbeVersion}
+                disabled={probeLoading || !serverId}
+                style={{
+                    padding: '4px 10px',
+                    borderRadius: '4px',
+                    border: '1px solid rgba(82,169,255,0.5)',
+                    background: 'rgba(82,169,255,0.12)',
+                    color: 'inherit',
+                    cursor: probeLoading ? 'wait' : 'pointer',
+                    fontSize: '0.7rem',
+                }}
+            >
+                {probeLoading ? 'Lecture des logs…' : buttonLabel}
+            </button>
+            {probeResult && (
+                <span style={{ fontSize: '0.7rem', color: '#a7f3d0' }}>
+                    Détecté&nbsp;: <strong>{probeResult.mc_version}</strong> ({probeResult.loader})
+                </span>
+            )}
+            {probeError && <span style={{ fontSize: '0.7rem', color: '#fb923c' }}>{probeError}</span>}
+        </div>
+    );
+
     return (
         <div style={box}>
             <h2 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '0.5rem' }}>Mods et plugins Minecraft</h2>
@@ -1447,6 +1506,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                         </p>
                     ) : null}
                     {(serverCtx.minecraft_versions_hint ?? []).length > 0 ? (
+                        <div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
                             <span style={{ opacity: 0.8 }}>Hints MC&nbsp;:</span>
 
@@ -1477,6 +1537,8 @@ export default function McPluginsDashboard(): React.ReactElement {
 
                             ))}
                         </div>
+                            {renderProbeControls('Re-détecter via logs')}
+                        </div>
 
                     ) : (
                         <div style={{ opacity: 0.75 }}>
@@ -1503,6 +1565,7 @@ export default function McPluginsDashboard(): React.ReactElement {
                             <p style={{ marginBottom: 0 }}>
                                 Vous pouvez filtrer manuellement ci-dessous.
                             </p>
+                            {renderProbeControls('Détecter via les logs serveur')}
                         </div>
 
                     )}
