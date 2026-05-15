@@ -20,6 +20,8 @@ require_once dirname(__DIR__) . '/app/Services/PmcpWorkspacePath.php';
 require_once dirname(__DIR__) . '/app/Services/PmcpInstallBackupRestore.php';
 require_once dirname(__DIR__) . '/app/Services/PmcpPresetItems.php';
 require_once dirname(__DIR__) . '/app/Services/PmcpInstallAddonRemove.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpVersionLogParser.php';
+require_once dirname(__DIR__) . '/app/Services/PmcpRuntimeVersionProbe.php';
 
 /**
  * Routes étend `/api/client/extensions/{identifier}` (voir blueprint.zip/docs/concepts/routing).
@@ -503,6 +505,48 @@ Route::get('/server/context', static function (Request $request) use ($resolveSe
         'uuid_full' => (string) ($server->uuid ?? ''),
         ...$ctx,
     ]);
+});
+
+Route::get('/server/probe-mc-version', static function (Request $request) use ($resolveServer): JsonResponse {
+    $validator = Validator::make($request->query(), [
+        'server' => ['required', 'string', 'max:64'],
+    ]);
+    if ($validator->fails()) {
+        return response()->json(['message' => 'Paramètres invalides.', 'errors' => $validator->errors()], 422);
+    }
+
+    $data = $validator->validated();
+    $user = $request->user();
+    if (! $user) {
+        return response()->json(['message' => 'Non authentifié.'], 401);
+    }
+
+    $server = $resolveServer($data['server']);
+    if ($server === null) {
+        return response()->json(['message' => 'Serveur introuvable.'], 404);
+    }
+
+    $server->loadMissing('node', 'subusers');
+    if ($user->id !== $server->owner_id && ! $user->root_admin) {
+        if (! $server->subusers->contains('user_id', $user->id)) {
+            return response()->json(['message' => 'Serveur introuvable.'], 404);
+        }
+    }
+
+    if (! $user->can(\Pterodactyl\Models\Permission::ACTION_FILE_READ, $server)) {
+        return response()->json(['message' => 'Permission refusée : lecture des fichiers du serveur.'], 403);
+    }
+
+    try {
+        $payload = \PteroMcPlugins\Services\PmcpRuntimeVersionProbe::probe($server);
+    } catch (\PteroMcPlugins\Services\PmcpHttpException $e) {
+        return response()->json(
+            array_merge(['message' => $e->getMessage()], $e->extra),
+            $e->status
+        );
+    }
+
+    return response()->json($payload);
 });
 
 Route::get('/schedule', static function (Request $request) use ($resolveServer): JsonResponse {
