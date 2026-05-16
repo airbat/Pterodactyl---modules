@@ -27,8 +27,32 @@ final class Server
     }
 
     /**
-     * Présente uniquement pour que {@see \PteroMcPlugins\Services\ServerMcContextBuilder}
-     * active la fusion des variables (le builder itère ensuite la propriété {@see self::$variables}).
+     * Relation Panel simulée : si {@see self::$variablesRelation} est défini, il est utilisé ;
+     * sinon repli sur {@see self::$variables} via {@see get()}.
      */
-    public function variables(): void {}
+    public ?object $variablesRelation = null;
+
+    public function variables(): object
+    {
+        if ($this->variablesRelation !== null) {
+            return $this->variablesRelation;
+        }
+
+        $rows = is_iterable($this->variables)
+            ? (is_array($this->variables) ? $this->variables : iterator_to_array($this->variables, false))
+            : [];
+
+        return new class ($rows) {
+            /** @param list<object> $rows */
+            public function __construct(private array $rows)
+            {
+            }
+
+            /** @return list<object> */
+            public function get(): array
+            {
+                return $this->rows;
+            }
+        };
+    }
 }

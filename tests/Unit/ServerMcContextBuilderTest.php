@@ -46,22 +46,33 @@ function pmcp_egg_stub(string $name, array $eggVarRows): object
 }
 
 /** Retourne un item œuf avec env_variable + getAttribute(default_value). */
-function pmcp_egg_var(string $env, string $defaultValue): object
+function pmcp_egg_var(string $env, string $defaultValue, ?int $id = null): object
 {
-    return new class ($env, $defaultValue) {
+    return new class ($env, $defaultValue, $id) {
         public string $env_variable;
+
+        public ?int $id;
 
         private string $def;
 
-        public function __construct(string $env, string $def)
+        public function __construct(string $env, string $def, ?int $id)
         {
             $this->env_variable = $env;
             $this->def = $def;
+            $this->id = $id;
         }
 
-        public function getAttribute(string $key): string
+        public function getAttribute(string $key): mixed
         {
-            return $key === 'default_value' ? $this->def : '';
+            if ($key === 'default_value') {
+                return $this->def;
+            }
+
+            if ($key === 'id') {
+                return $this->id;
+            }
+
+            return '';
         }
     };
 }
@@ -144,9 +155,43 @@ test('server_value (relation Panel Pterodactyl) prime sur default_value œuf', f
         ->toBe(\PteroMcPlugins\Services\ServerMcContextBuilder::CONTEXT_BUILDER_REVISION);
 });
 
+test('variables()->get() Panel avec server_value prime sur default_value œuf', function (): void {
+    $server = new Server;
+    $server->variables = [];
+    $server->variablesRelation = new class {
+        public function get(): array
+        {
+            return [
+                new class {
+                    public string $env_variable = 'BEDROCK_VERSION';
+                    public string $server_value = '1.26.20.5';
+
+                    public function getAttribute(string $key): string
+                    {
+                        return match ($key) {
+                            'env_variable' => 'BEDROCK_VERSION',
+                            'server_value' => '1.26.20.5',
+                            'default_value' => 'latest',
+                            default => '',
+                        };
+                    }
+                },
+            ];
+        }
+    };
+    $server->egg = pmcp_egg_stub('Vanilla Bedrock', [
+        pmcp_egg_var('BEDROCK_VERSION', 'latest'),
+    ]);
+    $server->nest = (object) ['name' => 'Minecraft'];
+
+    $p = ServerMcContextBuilder::build($server);
+
+    expect($p['minecraft_versions_hint'])->toContain('1.26.20.5')
+        ->and($p['egg_variables']['BEDROCK_VERSION'] ?? null)->toBe('1.26.20.5');
+});
+
 test('variable_id sans relation variable chargée → valeur serveur via map œuf', function (): void {
-    $eggVar = pmcp_egg_var('BEDROCK_VERSION', 'latest');
-    $eggVar->id = 42;
+    $eggVar = pmcp_egg_var('BEDROCK_VERSION', 'latest', 42);
 
     $server = new Server;
     $server->variables = [

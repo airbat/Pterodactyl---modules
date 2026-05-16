@@ -20,6 +20,7 @@ type HealthPayload = {
     status?: string;
     extension?: string;
     version?: string;
+    context_builder_revision?: number;
     blueprint_engine?: string;
     blueprint_matches_target?: string;
     blueprint_target?: string;
@@ -155,6 +156,7 @@ type ServerContextPayload = {
     context_meta?: {
         bedrock_like_egg?: boolean;
         startup_has_placeholders_left?: boolean;
+        context_builder_revision?: number;
     };
 };
 
@@ -1503,6 +1505,20 @@ export default function McPluginsDashboard(): React.ReactElement {
                             <strong>Œuf&nbsp;:</strong> {serverCtx.egg_name || '—'} ·{' '}
                             <strong>Nest&nbsp;:</strong> {serverCtx.nest_name || '—'}
 
+                        </p>
+                    ) : null}
+                    {typeof serverCtx.context_meta?.context_builder_revision === 'number' ? (
+                        <p style={{ marginBottom: '0.35rem', fontSize: '0.65rem', opacity: 0.55 }}>
+                            Contexte panel&nbsp;: révision{' '}
+                            <code>{serverCtx.context_meta.context_builder_revision}</code>
+                            {typeof health?.context_builder_revision === 'number' &&
+                            health.context_builder_revision !== serverCtx.context_meta.context_builder_revision ? (
+                                <span style={{ color: '#fb923c' }}>
+                                    {' '}
+                                    — extension déployée ({health.context_builder_revision}) différente du code
+                                    contexte ({serverCtx.context_meta.context_builder_revision})
+                                </span>
+                            ) : null}
                         </p>
                     ) : null}
                     {(serverCtx.minecraft_versions_hint ?? []).length > 0 ? (

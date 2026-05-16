@@ -1688,6 +1688,7 @@ Route::get('/health', fn () => response()->json([
     'status' => 'ok',
     'extension' => '{identifier}',
     'version' => '{version}',
+    'context_builder_revision' => \PteroMcPlugins\Services\ServerMcContextBuilder::CONTEXT_BUILDER_REVISION,
     'blueprint_target' => '{target}',
     'blueprint_matches_target' => '{is_target}',
     'blueprint_engine' => '{engine}',
