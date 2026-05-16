@@ -9,7 +9,8 @@ namespace PteroMcPlugins\Services;
  *
  * Pure : aucun I/O. Toute la logique testable en isolation sur fixtures.
  *
- * Loaders supportés v1.0 : paper, spigot, neoforge, forge, fabric, quilt, vanilla, bedrock.
+ * Loaders supportés v1.0 : paper, purpur, folia, pufferfish, leaf (forks Paper-like), spigot,
+ * neoforge, forge, fabric, quilt, vanilla, bedrock.
  * L'ordre des règles dans {@see parse()} est déterministe : la 1ère règle qui matche gagne.
  */
 final class PmcpVersionLogParser
@@ -25,15 +26,9 @@ final class PmcpVersionLogParser
 
         $buffer = self::normalizeLogBuffer($buffer);
 
-        // Paper : ne pas utiliser « [^(]* » avant « (MC: » — plusieurs builds insèrent
-        // « (Implementing API version …) » avant « (MC: …) », ce qui casse l’ancre stricte.
-        // Autoriser du texte/retours ligne entre « Paper version » et le premier « (MC: …) ».
-        if (preg_match('/\bPaper version\b[\s\S]{0,1200}?\(MC:\s*(\S+?)\)/i', $buffer, $m, PREG_OFFSET_CAPTURE)) {
-            return [
-                'mc_version' => $m[1][0],
-                'loader' => 'paper',
-                'source_line' => self::lineAtOffset($buffer, $m[0][1]),
-            ];
+        $paperLike = self::matchPaperLikeFork($buffer);
+        if ($paperLike !== null) {
+            return $paperLike;
         }
 
         // NeoForge avant Forge : "Forge mod loading service" est un substring de "NeoForge mod
@@ -90,6 +85,65 @@ final class PmcpVersionLogParser
                 'mc_version' => $m[1][0],
                 'loader' => 'vanilla',
                 'source_line' => self::lineAtOffset($buffer, $m[0][1]),
+            ];
+        }
+
+        // Repli : certains œufs / wrappers omettent le préfixe `[thread/INFO]:` attendu par la règle stricte.
+        if (preg_match('/^\s*Starting minecraft server version (\S+)/mi', $buffer, $m, PREG_OFFSET_CAPTURE)) {
+            return [
+                'mc_version' => $m[1][0],
+                'loader' => 'vanilla',
+                'source_line' => self::lineAtOffset($buffer, $m[0][1]),
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Paper et forks (Purpur, Folia, …) : `(MC: …)` si présent, sinon version MC extraite de
+     * `(Implementing API version 1.21.x-R0.1-SNAPSHOT)` (builds récents sans `(MC:)` sur la même ligne).
+     *
+     * @return array{mc_version: string, loader: string, source_line: string}|null
+     */
+    private static function matchPaperLikeFork(string $buffer): ?array
+    {
+        if (preg_match(
+            '/\b(Paper|Purpur|Folia|Pufferfish|Leaf)\s+version\b/i',
+            $buffer,
+            $head,
+            PREG_OFFSET_CAPTURE,
+        ) !== 1) {
+            return null;
+        }
+
+        $fork = strtolower($head[1][0]);
+        $start = $head[0][1];
+        $sliceLen = min(4000, strlen($buffer) - $start);
+        if ($sliceLen < 1) {
+            return null;
+        }
+
+        $window = substr($buffer, $start, $sliceLen);
+
+        if (preg_match('/\(MC:\s*(\S+?)\)/i', $window, $m, PREG_OFFSET_CAPTURE) === 1) {
+            return [
+                'mc_version' => $m[1][0],
+                'loader' => $fork,
+                'source_line' => self::lineAtOffset($buffer, $start),
+            ];
+        }
+
+        if (preg_match(
+            '/\(Implementing API version\s*(\d+(?:\.\d+)+)(?:-R[\d.]+(?:-SNAPSHOT)?)?\)/i',
+            $window,
+            $m,
+            PREG_OFFSET_CAPTURE,
+        ) === 1) {
+            return [
+                'mc_version' => $m[1][0],
+                'loader' => $fork,
+                'source_line' => self::lineAtOffset($buffer, $start),
             ];
         }
 

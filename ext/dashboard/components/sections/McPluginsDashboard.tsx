@@ -1562,6 +1562,16 @@ export default function McPluginsDashboard(): React.ReactElement {
                                     visite&nbsp;/ enregistrement sur la page Startup du serveur corrige souvent le cas.
                                 </p>
                             ) : null}
+                            {Object.keys(serverCtx.egg_variables ?? {}).length > 0 ? (
+                                <p style={{ marginBottom: '0.35rem', fontSize: '0.69rem', opacity: 0.88 }}>
+                                    Variables d&apos;œuf lues par le panel&nbsp;:{' '}
+                                    {Object.entries(serverCtx.egg_variables ?? {}).map(([k, v]) => (
+                                        <code key={k} style={{ marginRight: '6px' }}>
+                                            {k}={v}
+                                        </code>
+                                    ))}
+                                </p>
+                            ) : null}
                             <p style={{ marginBottom: 0 }}>
                                 Vous pouvez filtrer manuellement ci-dessous.
                             </p>

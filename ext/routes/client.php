@@ -498,6 +498,13 @@ Route::get('/server/context', static function (Request $request) use ($resolveSe
         return response()->json(['message' => 'Permission refusée.'], 403);
     }
 
+    try {
+        // Server::variables() = EggVariable + server_value (join) — pas de relation variables.variable.
+        $server->loadMissing(['variables', 'egg.variables', 'egg', 'nest']);
+    } catch (\Throwable) {
+        //
+    }
+
     $ctx = $serverMcContextPayload($server);
 
     return response()->json([

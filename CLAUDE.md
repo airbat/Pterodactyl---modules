@@ -107,6 +107,7 @@ rtk kubectl logs        # Deduplicated pod logs
 ```bash
 rtk curl <url>          # Compact HTTP responses (70%)
 rtk wget <url>          # Compact download output (65%)
+rtk fetch <url>
 ```
 
 ### Meta Commands

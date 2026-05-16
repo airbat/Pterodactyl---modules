@@ -40,6 +40,15 @@ test('Paper : (Implementing API …) avant (MC: …) sur la même ligne → load
         ->and($result['loader'])->toBe('paper');
 });
 
+test('Paper 1.21+ sans (MC:) — ForkJoinPool + Implementing API uniquement → loader=paper', function (): void {
+    $result = PmcpVersionLogParser::parse(pmcpFixture('paper-1.21.11-no-mc-forkjoin.log'));
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.21.11')
+        ->and($result['loader'])->toBe('paper')
+        ->and($result['source_line'])->toContain('ForkJoinPool.commonPool-worker-2');
+});
+
 test('Paper : séquences ANSI retirées avant parsing', function (): void {
     $buffer = "[12:34:56 INFO]: \x1b[0;32mThis server is running Paper version git-Paper-1 (MC: 1.20.6)\x1b[0m\n";
     $result = PmcpVersionLogParser::parse($buffer);
@@ -47,6 +56,32 @@ test('Paper : séquences ANSI retirées avant parsing', function (): void {
     expect($result)->not->toBeNull()
         ->and($result['mc_version'])->toBe('1.20.6')
         ->and($result['loader'])->toBe('paper');
+});
+
+test('Purpur 1.21 sans (MC:) sur la ligne → version via Implementing API', function (): void {
+    $result = PmcpVersionLogParser::parse(pmcpFixture('purpur-1.21-no-mc.log'));
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.21.11')
+        ->and($result['loader'])->toBe('purpur')
+        ->and($result['source_line'])->toContain('Purpur version');
+});
+
+test('Folia 1.21 sans (MC:) sur la ligne → version via Implementing API', function (): void {
+    $result = PmcpVersionLogParser::parse(pmcpFixture('folia-1.21-no-mc.log'));
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.21.11')
+        ->and($result['loader'])->toBe('folia');
+});
+
+test('Vanilla : ligne « Starting minecraft… » sans crochets thread', function (): void {
+    $buffer = "Starting minecraft server version 1.19.4\n";
+    $result = PmcpVersionLogParser::parse($buffer);
+
+    expect($result)->not->toBeNull()
+        ->and($result['mc_version'])->toBe('1.19.4')
+        ->and($result['loader'])->toBe('vanilla');
 });
 
 test('parse banner Spigot 1.20.1 → loader=spigot (priorité sur vanilla)', function (): void {

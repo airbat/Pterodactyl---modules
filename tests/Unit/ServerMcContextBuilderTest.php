@@ -112,6 +112,72 @@ test('marque nest/œufs Bedrock comme bedrock_like_egg', function (): void {
     expect($p['context_meta']['bedrock_like_egg'])->toBeTrue();
 });
 
+test('server_value (relation Panel Pterodactyl) prime sur default_value œuf', function (): void {
+    $server = new Server;
+    $server->variables = [
+        new class {
+            public string $env_variable = 'BEDROCK_VERSION';
+            public string $server_value = '1.26.20.5';
+
+            public function getAttribute(string $key): string
+            {
+                return match ($key) {
+                    'env_variable' => 'BEDROCK_VERSION',
+                    'server_value' => '1.26.20.5',
+                    'default_value' => 'latest',
+                    default => '',
+                };
+            }
+        },
+    ];
+    $server->egg = pmcp_egg_stub('Vanilla Bedrock', [
+        pmcp_egg_var('BEDROCK_VERSION', 'latest'),
+    ]);
+    $server->nest = (object) ['name' => 'Minecraft'];
+
+    $p = ServerMcContextBuilder::build($server);
+
+    expect($p['minecraft_versions_hint'])->toContain('1.26.20.5')
+        ->and($p['minecraft_versions_hint'])->not->toContain('latest')
+        ->and($p['egg_variables']['BEDROCK_VERSION'] ?? null)->toBe('1.26.20.5')
+        ->and($p['context_meta']['context_builder_revision'] ?? null)
+        ->toBe(\PteroMcPlugins\Services\ServerMcContextBuilder::CONTEXT_BUILDER_REVISION);
+});
+
+test('variable_id sans relation variable chargée → valeur serveur via map œuf', function (): void {
+    $eggVar = pmcp_egg_var('BEDROCK_VERSION', 'latest');
+    $eggVar->id = 42;
+
+    $server = new Server;
+    $server->variables = [
+        new class {
+            public int $variable_id = 42;
+            public string $variable_value = '1.26.20.5';
+            public int $id = 42;
+        },
+    ];
+    $server->egg = pmcp_egg_stub('Vanilla Bedrock', [$eggVar]);
+
+    $p = ServerMcContextBuilder::build($server);
+
+    expect($p['minecraft_versions_hint'])->toContain('1.26.20.5')
+        ->and($p['minecraft_versions_hint'])->not->toContain('latest')
+        ->and($p['egg_variables']['BEDROCK_VERSION'] ?? null)->toBe('1.26.20.5');
+});
+
+test('BEDROCK_VERSION 1.26.20.5 (quatre segments) → hint catalogue', function (): void {
+    $server = new Server;
+    $server->variables = [
+        pmcp_sv('BEDROCK_VERSION', '1.26.20.5', ''),
+    ];
+    $server->egg = pmcp_egg_stub('Vanilla Bedrock', []);
+
+    $p = ServerMcContextBuilder::build($server);
+
+    expect($p['minecraft_versions_hint'])->toContain('1.26.20.5')
+        ->and($p['egg_variables']['BEDROCK_VERSION'] ?? null)->toBe('1.26.20.5');
+});
+
 test('channel latest sur BEDROCK_VERSION accepte comme hint', function (): void {
     $server = new Server;
     $server->variables = [
